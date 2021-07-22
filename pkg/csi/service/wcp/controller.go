@@ -719,6 +719,7 @@ func (c *controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 	if soap.IsVimFault(err) {
 		log.Errorf("vimFault %+v", soap.ToVimFault(err))
 	}
+	
 	if err != nil {
 		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusAttachVolumeOpType,
 			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
