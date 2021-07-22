@@ -22,6 +22,7 @@ import (
 	"github.com/vmware/govmomi/cns"
 	"github.com/vmware/govmomi/vim25"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/logger"
+	"github.com/vmware/govmomi/vim25/soap"
 )
 
 // NewCnsClient creates a new CNS client
@@ -41,6 +42,12 @@ func (vc *VirtualCenter) ConnectCns(ctx context.Context) error {
 	var err = vc.Connect(ctx)
 	if err != nil {
 		log.Errorf("failed to connect to Virtual Center host %q with err: %v", vc.Config.Host, err)
+		if soap.IsSoapFault(err) {
+			log.Errorf("vimFault from soap fault %+v", soap.ToSoapFault(err).VimFault())
+		}
+		if soap.IsVimFault(err) {
+			log.Errorf("vimFault %+v", soap.ToVimFault(err))
+		}
 		return err
 	}
 	if vc.CnsClient == nil {

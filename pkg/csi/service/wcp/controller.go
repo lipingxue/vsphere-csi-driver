@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	"github.com/vmware/govmomi/units"
+	"github.com/vmware/govmomi/vim25/soap"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -537,6 +538,14 @@ func (c *controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return c.createBlockVolume(ctx, req)
 	}
 	resp, err := createVolumeInternal()
+	log := logger.GetLogger(ctx)
+	if soap.IsSoapFault(err) {
+		log.Errorf("vimFault from soap fault %+v", soap.ToSoapFault(err).VimFault())
+	}
+	if soap.IsVimFault(err) {
+		log.Errorf("vimFault %+v", soap.ToVimFault(err))
+	}
+
 	if err != nil {
 		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusCreateVolumeOpType,
 			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
@@ -576,6 +585,13 @@ func (c *controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 		return &csi.DeleteVolumeResponse{}, nil
 	}
 	resp, err := deleteVolumeInternal()
+	log := logger.GetLogger(ctx)
+	if soap.IsSoapFault(err) {
+		log.Errorf("vimFault from soap fault %+v", soap.ToSoapFault(err).VimFault())
+	}
+	if soap.IsVimFault(err) {
+		log.Errorf("vimFault %+v", soap.ToVimFault(err))
+	}
 	if err != nil {
 		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDeleteVolumeOpType,
 			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
@@ -696,6 +712,13 @@ func (c *controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 		return resp, nil
 	}
 	resp, err := controllerPublishVolumeInternal()
+	log := logger.GetLogger(ctx)
+	if soap.IsSoapFault(err) {
+		log.Errorf("vimFault from soap fault %+v", soap.ToSoapFault(err).VimFault())
+	}
+	if soap.IsVimFault(err) {
+		log.Errorf("vimFault %+v", soap.ToVimFault(err))
+	}
 	if err != nil {
 		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusAttachVolumeOpType,
 			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
@@ -737,6 +760,13 @@ func (c *controller) ControllerUnpublishVolume(ctx context.Context, req *csi.Con
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
 	resp, err := controllerUnpublishVolumeInternal()
+	log := logger.GetLogger(ctx)
+	if soap.IsSoapFault(err) {
+		log.Errorf("vimFault from soap fault %+v", soap.ToSoapFault(err).VimFault())
+	}
+	if soap.IsVimFault(err) {
+		log.Errorf("vimFault %+v", soap.ToVimFault(err))
+	}
 	if err != nil {
 		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDetachVolumeOpType,
 			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
@@ -878,6 +908,13 @@ func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 		return resp, nil
 	}
 	resp, err := controllerExpandVolumeInternal()
+	log := logger.GetLogger(ctx)
+	if soap.IsSoapFault(err) {
+		log.Errorf("vimFault from soap fault %+v", soap.ToSoapFault(err).VimFault())
+	}
+	if soap.IsVimFault(err) {
+		log.Errorf("vimFault %+v", soap.ToVimFault(err))
+	}
 	if err != nil {
 		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusExpandVolumeOpType,
 			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
