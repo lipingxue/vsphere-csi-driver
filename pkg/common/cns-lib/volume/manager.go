@@ -19,6 +19,7 @@ package volume
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/vmware/govmomi/cns"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/vim25/soap"
 	vim25types "github.com/vmware/govmomi/vim25/types"
 	"github.com/vmware/govmomi/vslm"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -467,6 +469,10 @@ func (m *defaultManager) AttachVolume(ctx context.Context,
 		// Call the CNS AttachVolume.
 		task, err := m.virtualCenter.CnsClient.AttachVolume(ctx, cnsAttachSpecList)
 		if err != nil {
+			if soap.IsSoapFault(err) {
+				soapFault := soap.ToSoapFault(err)
+				log.Infof("AttachVolume type of fault: %v. SoapFault Info: %v", reflect.TypeOf(soapFault.VimFault()), soapFault)
+			}
 			log.Errorf("CNS AttachVolume failed from vCenter %q with err: %v", m.virtualCenter.Config.Host, err)
 			return "", err
 		}
@@ -493,6 +499,11 @@ func (m *defaultManager) AttachVolume(ctx context.Context,
 
 		volumeOperationRes := taskResult.GetCnsVolumeOperationResult()
 		if volumeOperationRes.Fault != nil {
+			fault := volumeOperationRes.Fault
+			if fault != nil {
+				log.Errorf("Fault: %+v fault type: %v vimFault: %v vimFault type: %v encountered while attaching volume %v",
+					fault, reflect.TypeOf(fault), fault.Fault, reflect.TypeOf(fault.Fault), volumeID)
+			}
 			_, isResourceInUseFault := volumeOperationRes.Fault.Fault.(*vim25types.ResourceInUse)
 			if isResourceInUseFault {
 				log.Infof("observed ResourceInUse fault while attaching volume: %q with vm: %q", volumeID, vm.String())
@@ -675,6 +686,10 @@ func (m *defaultManager) deleteVolume(ctx context.Context, volumeID string, dele
 	cnsVolumeIDList = append(cnsVolumeIDList, cnsVolumeID)
 	task, err := m.virtualCenter.CnsClient.DeleteVolume(ctx, cnsVolumeIDList, deleteDisk)
 	if err != nil {
+		if soap.IsSoapFault(err) {
+			soapFault := soap.ToSoapFault(err)
+			log.Infof("DeleteVolume type of fault: %v. SoapFault Info: %v", reflect.TypeOf(soapFault.VimFault()), soapFault)
+		}
 		if cnsvsphere.IsNotFoundError(err) {
 			log.Infof("VolumeID: %q, not found, thus returning success", volumeID)
 			return nil
@@ -698,6 +713,11 @@ func (m *defaultManager) deleteVolume(ctx context.Context, volumeID string, dele
 	}
 	volumeOperationRes := taskResult.GetCnsVolumeOperationResult()
 	if volumeOperationRes.Fault != nil {
+		fault := volumeOperationRes.Fault
+		if fault != nil {
+			log.Errorf("Fault: %+v fault type: %v vimFault: %v vimFault type: %v encountered while deleting volume %v",
+				fault, reflect.TypeOf(fault), fault.Fault, reflect.TypeOf(fault.Fault), volumeID)
+		}
 		return logger.LogNewErrorf(log, "failed to delete volume: %q, fault: %q, opID: %q",
 			volumeID, spew.Sdump(volumeOperationRes.Fault), taskInfo.ActivationId)
 	}

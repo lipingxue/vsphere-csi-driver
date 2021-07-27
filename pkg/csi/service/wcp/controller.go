@@ -579,6 +579,12 @@ func (c *controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 		// Prometheus metric accordingly.
 		err = common.DeleteVolumeUtil(ctx, c.manager.VolumeManager, req.VolumeId, true)
 		if err != nil {
+			if soap.IsSoapFault(err) {
+				log.Errorf("vimFault from soap fault %+v", soap.ToSoapFault(err).VimFault())
+			}
+			if soap.IsVimFault(err) {
+				log.Errorf("vimFault %+v", soap.ToVimFault(err))
+			}
 			return nil, logger.LogNewErrorCodef(log, codes.Internal,
 				"failed to delete volume: %q. Error: %+v", req.VolumeId, err)
 		}
@@ -697,6 +703,13 @@ func (c *controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 				}
 
 				log.Infof("Volume %s is not eligible to be fake attached", req.VolumeId)
+			}
+
+			if soap.IsSoapFault(err) {
+				log.Errorf("vimFault from soap fault %+v", soap.ToSoapFault(err).VimFault())
+			}
+			if soap.IsVimFault(err) {
+				log.Errorf("vimFault %+v", soap.ToVimFault(err))
 			}
 			return nil, logger.LogNewErrorCodef(log, codes.Internal,
 				"failed to attach volume with volumeID: %s. Error: %+v", req.VolumeId, err)
