@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/vsphere-csi-driver/pkg/common/prometheus"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/common/utils"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/logger"
@@ -34,8 +35,7 @@ import (
 func csiGetVolumeHealthStatus(ctx context.Context, k8sclient clientset.Interface, metadataSyncer *metadataSyncInformer) {
 	log := logger.GetLogger(ctx)
 	log.Infof("csiGetVolumeHealthStatus: start")
-
-	//Call CNS QueryAll to get container volumes by cluster ID
+	// Call CNS QueryAll to get container volumes by cluster ID.
 	queryFilter := cnstypes.CnsQueryFilter{
 		ContainerClusterIds: []string{
 			metadataSyncer.configInfo.Cfg.Global.ClusterID,
@@ -84,28 +84,47 @@ func csiGetVolumeHealthStatus(ctx context.Context, k8sclient clientset.Interface
 		volumeIdToHealthStatusMap[vol.VolumeId.Id] = vol.HealthStatus
 	}
 
+	accessibleVolumeCount := 0
+	inaccessibleVolumeCount := 0
 	for volID, pvc := range volumeHandleToPvcMap {
+		var volHealthStatusAnn string
 		if volHealthStatus, ok := volumeIdToHealthStatusMap[volID]; ok {
 			// only update PVC health annotation if the HealthStatus of volume is not "unknown"
 			if volHealthStatus != string(pbmtypes.PbmHealthStatusForEntityUnknown) {
-				volHealthStatusAnn, err := common.ConvertVolumeHealthStatus(ctx, volID, volHealthStatus)
+				volHealthStatusAnn, err = common.ConvertVolumeHealthStatus(ctx, volID, volHealthStatus)
 				if err != nil {
 					log.Errorf("csiGetVolumeHealthStatus: invalid health status %q for volume %q", volHealthStatus, volID)
 				}
 				updateVolumeHealthStatus(ctx, k8sclient, pvc, volHealthStatusAnn)
 			}
 		} else {
-			// Set volume health status as "Inaccessible" when PVC is not found in CNS.
-			// When a Datastore is removed from VC (like vSAN direct disk decommisson with noAction does), the CNS Volumes
-			// on that Datastore are eventually removed from CNS DB, but the PVCs still remain in the K8S cluster.
-			// We are making the design choice of reflecting the CNS cached status of health on the PVC's health annotation
-			// at any given point of time. The vDPp operators are advised to look at the health change timestamp and wait
-			// "long enough" (like an hour) before taking any corrective actions. So if the PVC health is getting updated
-			// every 5 mins, wait for an hour or so before taking any corrective actions. This is an acceptable level
-			// of eventual consistency.
-			updateVolumeHealthStatus(ctx, k8sclient, pvc, common.VolHealthStatusInaccessible)
+			// Set volume health status as "Inaccessible" when PVC is not found in
+			// CNS. When a Datastore is removed from VC (like vSAN direct disk
+			// decommisson with noAction does), the CNS Volumes on that Datastore
+			// are eventually removed from CNS DB, but the PVCs still remain in
+			// the K8S cluster. We are making the design choice of reflecting the
+			// CNS cached status of health on the PVC's health annotation at any
+			// given point of time. The vDPp operators are advised to look at the
+			// health change timestamp and wait "long enough" (like an hour) before
+			// taking any corrective actions. So if the PVC health is getting
+			// updated every 5 mins, wait for an hour or so before taking any
+			// corrective actions. This is an acceptable level of eventual
+			// consistency.
+			volHealthStatusAnn = common.VolHealthStatusInaccessible
+			updateVolumeHealthStatus(ctx, k8sclient, pvc, volHealthStatusAnn)
+		}
+		switch volHealthStatusAnn {
+		case common.VolHealthStatusAccessible:
+			accessibleVolumeCount += 1
+		case common.VolHealthStatusInaccessible:
+			inaccessibleVolumeCount += 1
 		}
 	}
+	prometheus.VolumeHealthGaugeVec.WithLabelValues(
+		prometheus.PrometheusAccessibleVolumes).Set(float64(accessibleVolumeCount))
+	prometheus.VolumeHealthGaugeVec.WithLabelValues(
+		prometheus.PrometheusInaccessibleVolumes).Set(float64(inaccessibleVolumeCount))
+
 	log.Infof("GetVolumeHealthStatus: end")
 }
 
