@@ -422,7 +422,7 @@ func (c *controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 		return controllerPublishForBlockVolume(ctx, req, c)
 	}
 
-	resp, faultType, err := controllerPublishVolumeInternal()
+	resp, err := controllerPublishVolumeInternal()
 	if err != nil {
 		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusAttachVolumeOpType,
 			prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())

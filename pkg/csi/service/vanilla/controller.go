@@ -981,68 +981,107 @@ func (c *controller) ControllerUnpublishVolume(ctx context.Context, req *csi.Con
 // Volume id and size is retrieved from ControllerExpandVolumeRequest.
 func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (
 	*csi.ControllerExpandVolumeResponse, error) {
-	ctx = logger.NewContextWithLogger(ctx)
+	start := time.Now()
+	volumeType := prometheus.PrometheusUnknownVolumeType
+	namespace := prometheus.PrometheusUnknownNamespace
+	controllerExpandVolumeInternal := func() (
+		*csi.ControllerExpandVolumeResponse, error) {
+
+		ctx = logger.NewContextWithLogger(ctx)
+		log := logger.GetLogger(ctx)
+
+		log.Infof("ControllerExpandVolume: called with args %+v", *req)
+
+		if strings.Contains(req.VolumeId, ".vmdk") {
+			return nil, logger.LogNewErrorCodef(log, codes.Unimplemented,
+				"cannot expand migrated vSphere volume. :%q", req.VolumeId)
+		}
+
+		isExtendSupported, err := c.manager.VcenterManager.IsExtendVolumeSupported(ctx, c.manager.VcenterConfig.Host)
+		if err != nil {
+			return nil, logger.LogNewErrorCodef(log, codes.Internal,
+				"failed to verify if extend volume is supported or not. Error: %+v", err)
+		}
+		if !isExtendSupported {
+			return nil, logger.LogNewErrorCode(log, codes.Internal,
+				"volume Expansion is not supported in this vSphere release. "+
+					"Upgrade to vSphere 7.0 for offline expansion and vSphere 7.0U2 for online expansion support.")
+		}
+
+		isOnlineExpansionSupported, err := c.manager.VcenterManager.IsOnlineExtendVolumeSupported(ctx,
+			c.manager.VcenterConfig.Host)
+		if err != nil {
+			return nil, logger.LogNewErrorCodef(log, codes.Internal,
+				"failed to check if online expansion is supported due to error: %v", err)
+		}
+		isOnlineExpansionEnabled := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.OnlineVolumeExtend)
+		err = validateVanillaControllerExpandVolumeRequest(ctx, req, isOnlineExpansionEnabled, isOnlineExpansionSupported)
+		if err != nil {
+			msg := fmt.Sprintf("validation for ExpandVolume Request: %+v has failed. Error: %v", *req, err)
+			log.Error(msg)
+			return nil, err
+		}
+		volumeType = prometheus.PrometheusBlockVolumeType
+
+		volumeID := req.GetVolumeId()
+		volSizeBytes := int64(req.GetCapacityRange().GetRequiredBytes())
+		volSizeMB := int64(common.RoundUpSize(volSizeBytes, common.MbInBytes))
+
+		// Check if the volume contains CNS snapshots.
+		if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.BlockVolumeSnapshot) {
+			snapshots, _, err := common.QueryVolumeSnapshotsByVolumeID(ctx, c.manager.VolumeManager, volumeID,
+				common.QuerySnapshotLimit)
+			if err != nil {
+				return nil, logger.LogNewErrorCodef(log, codes.Internal,
+					"failed to retrieve snapshots for volume: %s. Error: %+v", volumeID, err)
+			}
+			if len(snapshots) == 0 {
+				log.Infof("The volume %s can be safely expanded as no CNS snapshots were found.",
+					req.VolumeId)
+			} else {
+				return nil, logger.LogNewErrorCodef(log, codes.FailedPrecondition,
+					"volume: %s with existing snapshots %v cannot be expanded. "+
+						"Please delete snapshots before expanding the volume", req.VolumeId, snapshots)
+			}
+		}
+
+		err = common.ExpandVolumeUtil(ctx, c.manager, volumeID, volSizeMB,
+			commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.AsyncQueryVolume),
+			commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.CSIVolumeManagerIdempotency))
+		if err != nil {
+			return nil, logger.LogNewErrorCodef(log, codes.Internal,
+				"failed to expand volume: %q to size: %d with error: %+v", volumeID, volSizeMB, err)
+		}
+
+		// Always set nodeExpansionRequired to true, even if requested size is equal
+		// to current size. Volume expansion may succeed on CNS but external-resizer
+		// may fail to update API server. Requests are requeued in this case. Setting
+		// nodeExpandsionRequired to false marks PVC resize as finished which
+		// prevents kubelet from expanding the filesystem.
+		// Ref: https://github.com/kubernetes-csi/external-resizer/blob/master/pkg/controller/controller.go#L335
+		nodeExpansionRequired := true
+		// Node expansion is not required for raw block volumes.
+		if _, ok := req.GetVolumeCapability().GetAccessType().(*csi.VolumeCapability_Block); ok {
+			nodeExpansionRequired = false
+		}
+		resp := &csi.ControllerExpandVolumeResponse{
+			CapacityBytes:         int64(units.FileSize(volSizeMB * common.MbInBytes)),
+			NodeExpansionRequired: nodeExpansionRequired,
+		}
+		return resp, nil
+	}
+
+	resp, err := controllerExpandVolumeInternal()
 	log := logger.GetLogger(ctx)
-	log.Infof("ControllerExpandVolume: called with args %+v", *req)
-
-	if strings.Contains(req.VolumeId, ".vmdk") {
-		return nil, logger.LogNewErrorCodef(log, codes.Unimplemented,
-			"cannot expand migrated vSphere volume. :%q", req.VolumeId)
-	}
-
-	isExtendSupported, err := c.manager.VcenterManager.IsExtendVolumeSupported(ctx, c.manager.VcenterConfig.Host)
 	if err != nil {
-		return nil, logger.LogNewErrorCodef(log, codes.Internal,
-			"failed to verify if extend volume is supported or not. Error: %+v", err)
+		log.Debugf("controllerExpandVolumeInternal: returns fault %q for volume %q", faultType, req.VolumeId)
+		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusExpandVolumeOpType,
+			prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
+	} else {
+		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusExpandVolumeOpType,
+			prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
 	}
-	if !isExtendSupported {
-		return nil, logger.LogNewErrorCode(log, codes.Internal,
-			"volume Expansion is not supported in this vSphere release. "+
-				"Upgrade to vSphere 7.0 for offline expansion and vSphere 7.0U2 for online expansion support.")
-	}
-
-	isOnlineExpansionSupported, err := c.manager.VcenterManager.IsOnlineExtendVolumeSupported(ctx,
-		c.manager.VcenterConfig.Host)
-	if err != nil {
-		return nil, logger.LogNewErrorCodef(log, codes.Internal,
-			"failed to check if online expansion is supported due to error: %v", err)
-	}
-	isOnlineExpansionEnabled := commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.OnlineVolumeExtend)
-	err = validateVanillaControllerExpandVolumeRequest(ctx, req, isOnlineExpansionEnabled, isOnlineExpansionSupported)
-	if err != nil {
-		msg := fmt.Sprintf("validation for ExpandVolume Request: %+v has failed. Error: %v", *req, err)
-		log.Error(msg)
-		return nil, err
-	}
-
-	volumeID := req.GetVolumeId()
-	volSizeBytes := int64(req.GetCapacityRange().GetRequiredBytes())
-	volSizeMB := int64(common.RoundUpSize(volSizeBytes, common.MbInBytes))
-
-	err = common.ExpandVolumeUtil(ctx, c.manager, volumeID, volSizeMB,
-		commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.AsyncQueryVolume),
-		commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.CSIVolumeManagerIdempotency))
-	if err != nil {
-		return nil, logger.LogNewErrorCodef(log, codes.Internal,
-			"failed to expand volume: %q to size: %d with error: %+v", volumeID, volSizeMB, err)
-	}
-
-	// Always set nodeExpansionRequired to true, even if requested size is equal
-	// to current size. Volume expansion may succeed on CNS but external-resizer
-	// may fail to update API server. Requests are requeued in this case. Setting
-	// nodeExpandsionRequired to false marks PVC resize as finished which
-	// prevents kubelet from expanding the filesystem.
-	// Ref: https://github.com/kubernetes-csi/external-resizer/blob/master/pkg/controller/controller.go#L335
-	nodeExpansionRequired := true
-	// Node expansion is not required for raw block volumes.
-	if _, ok := req.GetVolumeCapability().GetAccessType().(*csi.VolumeCapability_Block); ok {
-		nodeExpansionRequired = false
-	}
-	resp := &csi.ControllerExpandVolumeResponse{
-		CapacityBytes:         int64(units.FileSize(volSizeMB * common.MbInBytes)),
-		NodeExpansionRequired: nodeExpansionRequired,
-	}
-	return resp, nil
+	return resp, err
 }
 
 // ValidateVolumeCapabilities returns the capabilities of the volume.
