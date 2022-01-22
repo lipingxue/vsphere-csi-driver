@@ -173,6 +173,7 @@ spec:
       protocol: TCP
   selector:
     app: vsphere-csi-controller
+  type: LoadBalancer  
 ---
 kind: Deployment
 apiVersion: apps/v1
