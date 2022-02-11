@@ -27,6 +27,7 @@ import (
 	"github.com/vmware/govmomi/cns"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/vim25/soap"
 	vim25types "github.com/vmware/govmomi/vim25/types"
 	"github.com/vmware/govmomi/vslm"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -97,12 +98,26 @@ type Manager interface {
 	RegisterDisk(ctx context.Context, path string, name string) (string, error)
 	// RetrieveVStorageObject helps in retreiving virtual disk information for a given volume id.
 	RetrieveVStorageObject(ctx context.Context, volumeID string) (*vim25types.VStorageObject, error)
+	// CreateSnapshot helps create a snapshot for a block volume
+	CreateSnapshot(ctx context.Context, volumeID string, desc string) (*CnsSnapshotInfo, error)
+	// DeleteSnapshot helps delete a snapshot for a block volume
+	DeleteSnapshot(ctx context.Context, volumeID string, snapshotID string) error
+	// QuerySnapshots retrieves the list of snapshots based on the query filter.
+	QuerySnapshots(ctx context.Context, snapshotQueryFilter cnstypes.CnsSnapshotQueryFilter) (
+		*cnstypes.CnsSnapshotQueryResult, error)
 }
 
 // CnsVolumeInfo hold information related to volume created by CNS.
 type CnsVolumeInfo struct {
 	DatastoreURL string
 	VolumeID     cnstypes.CnsVolumeId
+}
+
+type CnsSnapshotInfo struct {
+	SnapshotID                string
+	SourceVolumeID            string
+	SnapshotDescription       string
+	SnapshotCreationTimestamp time.Time
 }
 
 var (
@@ -112,9 +127,20 @@ var (
 	// read/write on manager instance.
 	managerInstanceLock sync.Mutex
 	volumeTaskMap       = make(map[string]*createVolumeTaskDetails)
+
+	snapshotTaskMap = make(map[string]*createSnapshotTaskDetails)
+	// snapshotTaskMapLock is used to serialize writes to snapshotTaskMap.
+	// Alternatively, we may use Sync.Map for snapshotTaskMap without using a lock explicitly
+	snapshotTaskMapLock sync.Mutex
+
 	// Alias for CreateVolumeOperationRequestDetails function declaration.
 	createRequestDetails = cnsvolumeoperationrequest.CreateVolumeOperationRequestDetails
 )
+
+// createSnapshotTaskDetails has the same structure as createVolumeTaskDetails
+type createSnapshotTaskDetails struct {
+	createVolumeTaskDetails
+}
 
 // createVolumeTaskDetails contains taskInfo object and expiration time.
 type createVolumeTaskDetails struct {
@@ -1499,4 +1525,452 @@ func (m *defaultManager) QueryVolumeAsync(ctx context.Context, queryFilter cnsty
 	log.Infof("QueryVolumeAsync successfully returned CnsQueryResult, opId: %q", queryVolumeAsyncTaskInfo.ActivationId)
 	log.Debugf("QueryVolumeAsync returned CnsQueryResult: %+v", spew.Sdump(queryVolumeAsyncResult.QueryResult))
 	return &queryVolumeAsyncResult.QueryResult, nil
+}
+
+func (m *defaultManager) QuerySnapshots(ctx context.Context, snapshotQueryFilter cnstypes.CnsSnapshotQueryFilter) (
+	*cnstypes.CnsSnapshotQueryResult, error) {
+	internalQuerySnapshots := func() (*cnstypes.CnsSnapshotQueryResult, error) {
+		log := logger.GetLogger(ctx)
+		err := validateManager(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+		// Set up the VC connection.
+		err = m.virtualCenter.ConnectCns(ctx)
+		if err != nil {
+			log.Errorf("ConnectCns failed with err: %+v", err)
+			return nil, err
+		}
+		// Call the CNS QuerySnapshots.
+		querySnapshotsTask, err := m.virtualCenter.CnsClient.QuerySnapshots(ctx, snapshotQueryFilter)
+		if err != nil {
+			log.Errorf("Failed to get the task of CNS QuerySnapshots with err: %v", err)
+			return nil, err
+		}
+		querySnapshotsTaskInfo, err := cns.GetTaskInfo(ctx, querySnapshotsTask)
+		if err != nil {
+			log.Errorf("failed to get taskInfo for QuerySnapshots task from vCenter %q with err: %v",
+				m.virtualCenter.Config.Host, err)
+			return nil, err
+		}
+		res, err := cns.GetQuerySnapshotsTaskResult(ctx, querySnapshotsTaskInfo)
+		if err != nil {
+			log.Errorf("failed to get task result for QuerySnapshots task %s with error: %v",
+				querySnapshotsTask.Reference().Value, err)
+			return nil, err
+		}
+		return res, err
+	}
+	start := time.Now()
+	resp, err := internalQuerySnapshots()
+	if err != nil {
+		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusQuerySnapshotsOpType,
+			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+	} else {
+		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusQuerySnapshotsOpType,
+			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	}
+	return resp, err
+}
+
+// Helper function for create snapshot with different behaviors in the idempotency handling
+// depends on whether the improved idempotency FSS is enabled.
+func (m *defaultManager) createSnapshotWithImprovedIdempotencyCheck(ctx context.Context, volumeID string,
+	snapshotName string) (*CnsSnapshotInfo, error) {
+	log := logger.GetLogger(ctx)
+	var (
+		// Reference to the CreateSnapshot task on CNS.
+		createSnapshotsTask *object.Task
+		// Name of the CnsVolumeOperationRequest instance.
+		instanceName = snapshotName + "-" + volumeID
+		// Local instance of CreateSnapshot details that needs to be persisted.
+		volumeOperationDetails *cnsvolumeoperationrequest.VolumeOperationRequestDetails
+		// error
+		err error
+	)
+
+	if m.idempotencyHandlingEnabled {
+		if m.operationStore == nil {
+			return nil, logger.LogNewError(log, "operation store cannot be nil")
+		}
+
+		volumeOperationDetails, err = m.operationStore.GetRequestDetails(ctx, instanceName)
+		switch {
+		case err == nil:
+			// Validate if previous operation was successful.
+			if volumeOperationDetails.OperationDetails.TaskStatus == taskInvocationStatusSuccess &&
+				volumeOperationDetails.VolumeID != "" && volumeOperationDetails.SnapshotID != "" {
+				log.Infof("Snapshot with name %q and id %q on Volume %q is already created on CNS with opId: %q.",
+					instanceName, volumeOperationDetails.SnapshotID, volumeOperationDetails.VolumeID,
+					volumeOperationDetails.OperationDetails.OpID)
+
+				return &CnsSnapshotInfo{
+					SnapshotID:                volumeOperationDetails.SnapshotID,
+					SourceVolumeID:            volumeOperationDetails.VolumeID,
+					SnapshotDescription:       volumeOperationDetails.Name,
+					SnapshotCreationTimestamp: volumeOperationDetails.OperationDetails.TaskInvocationTimestamp.Time,
+				}, nil
+			}
+			// Validate if previous operation is pending.
+			if volumeOperationDetails.OperationDetails.TaskStatus == taskInvocationStatusInProgress &&
+				volumeOperationDetails.OperationDetails.TaskID != "" {
+				log.Infof("Snapshot with name %s has CreateSnapshot task %s pending on CNS.",
+					instanceName,
+					volumeOperationDetails.OperationDetails.TaskID)
+				taskMoRef := vim25types.ManagedObjectReference{
+					Type:  "Task",
+					Value: volumeOperationDetails.OperationDetails.TaskID,
+				}
+				createSnapshotsTask = object.NewTask(m.virtualCenter.Client.Client, taskMoRef)
+			}
+		case apierrors.IsNotFound(err):
+			// Instance doesn't exist. This is likely the first attempt to create the snapshot.
+			volumeOperationDetails = createRequestDetails(
+				instanceName, volumeID, "", 0, metav1.Now(), "", "",
+				taskInvocationStatusInProgress, "")
+		default:
+			return nil, err
+		}
+	} else {
+		// get snapshot task details from an in-memory map
+		createSnapshotsTask = getPendingCreateSnapshotTaskFromMap(ctx, instanceName)
+	}
+
+	defer func() {
+		// Persist the operation details before returning if the improved idempotency is enabled. Only success or error
+		// needs to be stored as InProgress details are stored when the task is created on CNS.
+		if m.idempotencyHandlingEnabled &&
+			volumeOperationDetails != nil && volumeOperationDetails.OperationDetails != nil &&
+			volumeOperationDetails.OperationDetails.TaskStatus != taskInvocationStatusInProgress {
+			if err := m.operationStore.StoreRequestDetails(ctx, volumeOperationDetails); err != nil {
+				log.Warnf("failed to store CreateSnapshot details with error: %v", err)
+			}
+		}
+	}()
+
+	if createSnapshotsTask == nil {
+		createSnapshotsTask, err = invokeCNSCreateSnapshot(ctx, m.virtualCenter, volumeID, instanceName)
+		if err != nil {
+			if m.idempotencyHandlingEnabled {
+				volumeOperationDetails = createRequestDetails(instanceName, volumeID, "", 0,
+					volumeOperationDetails.OperationDetails.TaskInvocationTimestamp, "", "",
+					taskInvocationStatusError, err.Error())
+			}
+			return nil, logger.LogNewErrorf(log, "failed to create snapshot with error: %v", err)
+		}
+
+		if m.idempotencyHandlingEnabled {
+			// Persist the volume operation details.
+			volumeOperationDetails = createRequestDetails(instanceName, volumeID, "", 0,
+				volumeOperationDetails.OperationDetails.TaskInvocationTimestamp,
+				createSnapshotsTask.Reference().Value, "", taskInvocationStatusInProgress, "")
+			if err := m.operationStore.StoreRequestDetails(ctx, volumeOperationDetails); err != nil {
+				// Don't return if CreateSnapshot details can't be stored.
+				log.Warnf("failed to store CreateSnapshot details with error: %v", err)
+			}
+		} else {
+			// store task details into snapshotTaskMap
+			var taskDetails createSnapshotTaskDetails
+			taskDetails.task = createSnapshotsTask
+			taskDetails.expirationTime = time.Now().Add(time.Hour * time.Duration(
+				defaultOpsExpirationTimeInHours))
+			func() {
+				// put the snapshotTaskMap update operation with locking into an anonymous func
+				// to ensure the deferred unlock is called right after the update.
+				snapshotTaskMapLock.Lock()
+				defer snapshotTaskMapLock.Unlock()
+				snapshotTaskMap[instanceName] = &taskDetails
+			}()
+
+		}
+	}
+
+	// Get the taskInfo and more!
+	createSnapshotsTaskInfo, err := cns.GetTaskInfo(ctx, createSnapshotsTask)
+	if err != nil || createSnapshotsTaskInfo == nil {
+		return nil, logger.LogNewErrorf(log, "Failed to get taskInfo for CreateSnapshots task "+
+			"from vCenter %q with err: %v", m.virtualCenter.Config.Host, err)
+	}
+	log.Infof("CreateSnapshots: VolumeID: %q, opId: %q", volumeID, createSnapshotsTaskInfo.ActivationId)
+
+	// Get the taskResult
+	createSnapshotsTaskResult, err := cns.GetTaskResult(ctx, createSnapshotsTaskInfo)
+	if err != nil || createSnapshotsTaskResult == nil {
+		return nil, logger.LogNewErrorf(log, "unable to find the task result for CreateSnapshots task "+
+			"from vCenter %q. taskID: %q, opId: %q createResults: %+v",
+			m.virtualCenter.Config.Host, createSnapshotsTaskInfo.Task.Value, createSnapshotsTaskInfo.ActivationId,
+			createSnapshotsTaskResult)
+	}
+
+	// Handle snapshot operation result
+	createSnapshotsOperationRes := createSnapshotsTaskResult.GetCnsVolumeOperationResult()
+	if createSnapshotsOperationRes.Fault != nil {
+		errMsg := fmt.Sprintf("failed to create snapshot %q on volume %q with fault: %q, opID: %q",
+			instanceName, volumeID, spew.Sdump(createSnapshotsOperationRes.Fault),
+			createSnapshotsTaskInfo.ActivationId)
+
+		if m.idempotencyHandlingEnabled {
+			volumeOperationDetails = createRequestDetails(instanceName, volumeID, "", 0,
+				volumeOperationDetails.OperationDetails.TaskInvocationTimestamp, createSnapshotsTask.Reference().Value,
+				createSnapshotsTaskInfo.ActivationId, taskInvocationStatusError, errMsg)
+		} else {
+			// Remove the task details from map when the current task fails
+			_, ok := snapshotTaskMap[instanceName]
+			if ok {
+				func() {
+					// put the snapshotTaskMap update operation with locking into an anonymous func
+					// to ensure the deferred unlock is called right after the update.
+					snapshotTaskMapLock.Lock()
+					defer snapshotTaskMapLock.Unlock()
+					log.Debugf("Deleted task for %s from snapshotTaskMap because the task has failed",
+						instanceName)
+					delete(snapshotTaskMap, instanceName)
+				}()
+			}
+		}
+
+		return nil, logger.LogNewError(log, errMsg)
+	}
+
+	snapshotCreateResult := interface{}(createSnapshotsTaskResult).(*cnstypes.CnsSnapshotCreateResult)
+
+	cnsSnapshotInfo := &CnsSnapshotInfo{
+		SnapshotID:                snapshotCreateResult.Snapshot.SnapshotId.Id,
+		SourceVolumeID:            snapshotCreateResult.Snapshot.VolumeId.Id,
+		SnapshotDescription:       snapshotCreateResult.Snapshot.Description,
+		SnapshotCreationTimestamp: snapshotCreateResult.Snapshot.CreateTime,
+	}
+
+	if m.idempotencyHandlingEnabled {
+		// create the volumeOperationDetails object for persistence
+		volumeOperationDetails = createRequestDetails(
+			instanceName, cnsSnapshotInfo.SourceVolumeID, cnsSnapshotInfo.SnapshotID, 0,
+			volumeOperationDetails.OperationDetails.TaskInvocationTimestamp, createSnapshotsTask.Reference().Value,
+			createSnapshotsTaskInfo.ActivationId, taskInvocationStatusSuccess, "")
+	}
+
+	log.Infof("CreateSnapshot: Snapshot created successfully. VolumeID: %q, SnapshotID: %q, "+
+		"SnapshotCreateTime: %q, opId: %q", cnsSnapshotInfo.SourceVolumeID, cnsSnapshotInfo.SnapshotID,
+		cnsSnapshotInfo.SnapshotCreationTimestamp, createSnapshotsTaskInfo.ActivationId)
+
+	return cnsSnapshotInfo, nil
+}
+
+// The snapshotName parameter denotes the snapshot description required by CNS CreateSnapshot API.
+// This parameter is expected to be filled with the CSI CreateSnapshotRequest Name,
+// which is generated by the CSI snapshotter sidecar.
+func (m *defaultManager) CreateSnapshot(
+	ctx context.Context, volumeID string, snapshotName string) (*CnsSnapshotInfo, error) {
+	internalCreateSnapshot := func() (*CnsSnapshotInfo, error) {
+		log := logger.GetLogger(ctx)
+		err := validateManager(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+		// Set up the VC connection
+		err = m.virtualCenter.ConnectCns(ctx)
+		if err != nil {
+			return nil, logger.LogNewErrorf(log, "ConnectCns failed with err: %+v", err)
+		}
+
+		return m.createSnapshotWithImprovedIdempotencyCheck(ctx, volumeID, snapshotName)
+	}
+
+	start := time.Now()
+	cnsSnapshotInfo, err := internalCreateSnapshot()
+	if err != nil {
+		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateSnapshotOpType,
+			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+	} else {
+		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateSnapshotOpType,
+			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	}
+	return cnsSnapshotInfo, err
+}
+
+// Helper function for create snapshot with different behaviors in the idempotency handling
+// depends on whether the improved idempotency FSS is enabled.
+func (m *defaultManager) deleteSnapshotWithImprovedIdempotencyCheck(
+	ctx context.Context, volumeID string, snapshotID string) error {
+	log := logger.GetLogger(ctx)
+	var (
+		// Reference to the DeleteVolume task on CNS.
+		deleteSnapshotTask *object.Task
+		// Name of the CnsVolumeOperationRequest instance.
+		instanceName = "deletesnapshot-" + volumeID + "-" + snapshotID
+		// Local instance of DeleteSnapshot details that needs to be persisted.
+		volumeOperationDetails *cnsvolumeoperationrequest.VolumeOperationRequestDetails
+		// error
+		err error
+	)
+
+	if m.idempotencyHandlingEnabled {
+		if m.operationStore == nil {
+			return logger.LogNewError(log, "operation store cannot be nil")
+		}
+
+		volumeOperationDetails, err = m.operationStore.GetRequestDetails(ctx, instanceName)
+		switch {
+		case err == nil:
+			if volumeOperationDetails.OperationDetails != nil {
+				// Validate if previous attempt was successful.
+				if volumeOperationDetails.OperationDetails.TaskStatus == taskInvocationStatusSuccess {
+					log.Infof("Snapshot id %q on Volume %q is already deleted on CNS with opId: %q.",
+						snapshotID, volumeID, volumeOperationDetails.OperationDetails.OpID)
+					return nil
+				}
+				// Validate if previous operation is pending.
+				if volumeOperationDetails.OperationDetails.TaskStatus == taskInvocationStatusInProgress &&
+					volumeOperationDetails.OperationDetails.TaskID != "" {
+					taskMoRef := vim25types.ManagedObjectReference{
+						Type:  "Task",
+						Value: volumeOperationDetails.OperationDetails.TaskID,
+					}
+					deleteSnapshotTask = object.NewTask(m.virtualCenter.Client.Client, taskMoRef)
+				}
+			}
+		case apierrors.IsNotFound(err):
+			volumeOperationDetails = createRequestDetails(instanceName, "", "", 0, metav1.Now(),
+				"", "", taskInvocationStatusInProgress, "")
+		default:
+			return err
+		}
+	}
+
+	defer func() {
+		// Persist the operation details before returning. Only success or error
+		// needs to be stored as InProgress details are stored when the task is
+		// created on CNS.
+		if m.idempotencyHandlingEnabled &&
+			volumeOperationDetails != nil && volumeOperationDetails.OperationDetails != nil &&
+			volumeOperationDetails.OperationDetails.TaskStatus != taskInvocationStatusInProgress {
+			if err := m.operationStore.StoreRequestDetails(ctx, volumeOperationDetails); err != nil {
+				log.Warnf("failed to store DeleteSnapshot operation details with error: %v", err)
+			}
+		}
+	}()
+
+	if deleteSnapshotTask == nil {
+		deleteSnapshotTask, err = invokeCNSDeleteSnapshot(ctx, m.virtualCenter, volumeID, snapshotID)
+		if err != nil {
+			if cnsvsphere.IsNotFoundError(err) {
+				log.Infof("SnapshotID: %q on volume with volumeID: %q, not found, thus returning success",
+					snapshotID, volumeID)
+				if m.idempotencyHandlingEnabled {
+					volumeOperationDetails = createRequestDetails(instanceName, "", "", 0,
+						metav1.Now(), "", "", taskInvocationStatusSuccess, "")
+				}
+				return nil
+			}
+
+			if m.idempotencyHandlingEnabled {
+				volumeOperationDetails = createRequestDetails(instanceName, "", "", 0,
+					metav1.Now(), "", "", taskInvocationStatusError, err.Error())
+			}
+
+			return logger.LogNewErrorf(log, "CNS DeleteSnapshot failed from the vCenter %q with err: %v",
+				m.virtualCenter.Config.Host, err)
+		}
+
+		if m.idempotencyHandlingEnabled {
+			volumeOperationDetails = createRequestDetails(instanceName, "", "", 0,
+				metav1.Now(), deleteSnapshotTask.Reference().Value, "", taskInvocationStatusInProgress, "")
+			if err := m.operationStore.StoreRequestDetails(ctx, volumeOperationDetails); err != nil {
+				log.Warnf("failed to store DeleteSnapshot operation details with error: %v", err)
+			}
+		}
+	}
+
+	// Get the taskInfo
+	deleteSnapshotsTaskInfo, err := cns.GetTaskInfo(ctx, deleteSnapshotTask)
+	if err != nil || deleteSnapshotsTaskInfo == nil {
+		return logger.LogNewErrorf(log, "Failed to get taskInfo for DeleteSnapshots task from vCenter %q with err: %v",
+			m.virtualCenter.Config.Host, err)
+	}
+	log.Infof("DeleteSnapshot: VolumeID: %q, SnapshotID: %q, opId: %q", volumeID, snapshotID,
+		deleteSnapshotsTaskInfo.ActivationId)
+
+	// Get the taskResult
+	deleteSnapshotsTaskResult, err := cns.GetTaskResult(ctx, deleteSnapshotsTaskInfo)
+	if err != nil || deleteSnapshotsTaskResult == nil {
+		log.Errorf("unable to find the task result for DeleteSnapshots task from vCenter %q. taskID: %q, "+
+			"opId: %q createResults: %+v", m.virtualCenter.Config.Host, deleteSnapshotsTaskInfo.Task.Value,
+			deleteSnapshotsTaskInfo.ActivationId, deleteSnapshotsTaskResult)
+		return err
+	}
+
+	// Handle snapshot operation result
+	deleteSnapshotsOperationRes := deleteSnapshotsTaskResult.GetCnsVolumeOperationResult()
+	if deleteSnapshotsOperationRes.Fault != nil {
+		err = soap.WrapVimFault(deleteSnapshotsOperationRes.Fault.Fault)
+
+		isInvalidArgumentError := cnsvsphere.IsInvalidArgumentError(err)
+		var invalidProperty string
+		if isInvalidArgumentError {
+			invalidProperty = deleteSnapshotsOperationRes.Fault.Fault.(*vim25types.InvalidArgument).InvalidProperty
+		}
+
+		// Ignore errors, NotFound and InvalidArgument, in DeleteSnapshot
+		if cnsvsphere.IsVimFaultNotFoundError(err) {
+			log.Infof("Snapshot %q on volume %q might have already been deleted "+
+				"with the error %v. Ignore the error for DeleteSnapshot", snapshotID, volumeID,
+				spew.Sdump(deleteSnapshotsOperationRes.Fault))
+		} else if isInvalidArgumentError && invalidProperty == "" {
+			log.Infof("Snapshot %q on volume %q might have already been deleted "+
+				"with the error %v. Ignore the error for DeleteSnapshot", snapshotID, volumeID,
+				spew.Sdump(deleteSnapshotsOperationRes.Fault))
+		} else {
+			errMsg := fmt.Sprintf("failed to delete snapshot %q on volume %q. fault: %q, opId: %q",
+				snapshotID, volumeID, spew.Sdump(deleteSnapshotsOperationRes.Fault), deleteSnapshotsTaskInfo.ActivationId)
+
+			if m.idempotencyHandlingEnabled {
+				volumeOperationDetails = createRequestDetails(instanceName, "", "", 0,
+					volumeOperationDetails.OperationDetails.TaskInvocationTimestamp, deleteSnapshotTask.Reference().Value,
+					deleteSnapshotsTaskInfo.ActivationId, taskInvocationStatusError, errMsg)
+			}
+
+			return logger.LogNewError(log, errMsg)
+		}
+	}
+
+	if m.idempotencyHandlingEnabled {
+		// create the volumeOperationDetails object for persistence
+		volumeOperationDetails = createRequestDetails(instanceName, "", "", 0,
+			volumeOperationDetails.OperationDetails.TaskInvocationTimestamp, deleteSnapshotTask.Reference().Value,
+			deleteSnapshotsTaskInfo.ActivationId, taskInvocationStatusSuccess, "")
+	}
+
+	log.Infof("DeleteSnapshot: Snapshot %q on volume %q is deleted successfully. opId: %q", snapshotID,
+		volumeID, deleteSnapshotsTaskInfo.ActivationId)
+
+	return nil
+}
+
+func (m *defaultManager) DeleteSnapshot(ctx context.Context, volumeID string, snapshotID string) error {
+	internalDeleteSnapshot := func() error {
+		log := logger.GetLogger(ctx)
+		err := validateManager(ctx, m)
+		if err != nil {
+			return err
+		}
+		// Set up the VC connection
+		err = m.virtualCenter.ConnectCns(ctx)
+		if err != nil {
+			log.Errorf("ConnectCns failed with err: %+v", err)
+			return err
+		}
+
+		return m.deleteSnapshotWithImprovedIdempotencyCheck(ctx, volumeID, snapshotID)
+	}
+
+	start := time.Now()
+	err := internalDeleteSnapshot()
+	if err != nil {
+		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteSnapshotOpType,
+			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+	} else {
+		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteSnapshotOpType,
+			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	}
+	return err
 }

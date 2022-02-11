@@ -19,13 +19,19 @@ package common
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 
+	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/davecgh/go-spew/spew"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/vim25/mo"
 	vim25types "github.com/vmware/govmomi/vim25/types"
 	vsanfstypes "github.com/vmware/govmomi/vsan/vsanfs/types"
 	"golang.org/x/net/context"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	cnsvolume "sigs.k8s.io/vsphere-csi-driver/pkg/common/cns-lib/volume"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/common/cns-lib/vsphere"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/common/utils"
@@ -535,6 +541,276 @@ func QueryVolumeByID(ctx context.Context, volManager cnsvolume.Manager, volumeID
 	return &queryResult.Volumes[0], nil
 }
 
+func ListSnapshotsUtil(ctx context.Context, volManager cnsvolume.Manager, volumeID string, snapshotID string,
+	token string, maxEntries int64) ([]*csi.Snapshot, string, error) {
+	log := logger.GetLogger(ctx)
+	if snapshotID != "" {
+		// Retrieve specific snapshot information.
+		// The snapshotID is of format: <volume-id>+<snapshot-id>
+		volID, snapID, err := ParseCSISnapshotID(snapshotID)
+		if err != nil {
+			log.Errorf("Unable to determine the volume-id and snapshot-id")
+			return nil, "", err
+		}
+		snapshots, err := QueryVolumeSnapshot(ctx, volManager, volID, snapID, maxEntries)
+		if err != nil {
+			// Failed to retrieve information of snapshot.
+			log.Errorf("failed to retrieve snapshot information for volume-id: %s snapshot-id: %s err: %+v", volID, snapID, err)
+			return nil, "", err
+		}
+		return snapshots, "", nil
+	} else if volumeID != "" {
+		// Retrieve all snapshots for a volume-id
+		// Check if the volume-id specified is of Block type.
+		queryFilter := cnstypes.CnsQueryFilter{
+			VolumeIds: []cnstypes.CnsVolumeId{{Id: volumeID}},
+		}
+		// Validate that the volume-id is of block volume type.
+		queryResult, err := volManager.QueryVolume(ctx, queryFilter)
+		if err != nil {
+			return nil, "", logger.LogNewErrorCodef(log, codes.Internal,
+				"queryVolume failed with err=%+v", err)
+		}
+
+		if len(queryResult.Volumes) == 0 {
+			return nil, "", logger.LogNewErrorCodef(log, codes.Internal,
+				"volumeID %q not found in QueryVolume", volumeID)
+		}
+		if queryResult.Volumes[0].VolumeType == FileVolumeType {
+			return nil, "", logger.LogNewErrorCodef(log, codes.Unimplemented,
+				"ListSnapshot for file volume: %q not supported", volumeID)
+		}
+		return QueryVolumeSnapshotsByVolumeID(ctx, volManager, volumeID, maxEntries)
+	} else {
+		// Retrieve all snapshots in the inventory
+		return QueryAllVolumeSnapshots(ctx, volManager, token, maxEntries)
+	}
+}
+
+func QueryVolumeSnapshot(ctx context.Context, volManager cnsvolume.Manager, volID string, snapID string,
+	maxEntries int64) ([]*csi.Snapshot, error) {
+	log := logger.GetLogger(ctx)
+	var snapshots []*csi.Snapshot
+	// Retrieve the individual snapshot information using CNS QuerySnapshots
+	querySpec := cnstypes.CnsSnapshotQuerySpec{
+		VolumeId: cnstypes.CnsVolumeId{
+			Id: volID,
+		},
+		SnapshotId: &cnstypes.CnsSnapshotId{
+			Id: snapID,
+		},
+	}
+	querySnapFilter := cnstypes.CnsSnapshotQueryFilter{
+		SnapshotQuerySpecs: []cnstypes.CnsSnapshotQuerySpec{querySpec},
+		Cursor: &cnstypes.CnsCursor{
+			Offset: 0,
+			Limit:  maxEntries,
+		},
+	}
+	queryResultEntries, _, err := utils.QuerySnapshotsUtil(ctx, volManager, querySnapFilter, QuerySnapshotLimit)
+	if err != nil {
+		return nil, logger.LogNewErrorCodef(log, codes.Internal,
+			"failed retrieve snapshot info for volume-id: %s snapshot-id: %s err: %+v", volID, snapID, err)
+	}
+	if len(queryResultEntries) == 0 {
+		return nil, logger.LogNewErrorCodef(log, codes.Internal,
+			"no snapshot infos retrieved for volume-id: %s snapshot-id: %s from QuerySnapshot", volID, snapID)
+	}
+	snapshotResult := queryResultEntries[0]
+	if snapshotResult.Error != nil {
+		fault := snapshotResult.Error.Fault
+		if _, ok := fault.(cnstypes.CnsSnapshotNotFoundFault); ok {
+			return nil, logger.LogNewErrorCodef(log, codes.Internal,
+				"snapshot-id: %s not found for volume-id: %s during QuerySnapshots, err: %+v", snapID, volID, fault)
+		}
+		return nil, logger.LogNewErrorCodef(log, codes.Internal,
+			"unexpected error received when retrieving snapshot info for volume-id: %s snapshot-id: %s err: %+v",
+			volID, snapID, snapshotResult.Error.Fault)
+	}
+	//Retrieve the volume size to be returned as snapshot size.
+	// TODO: Retrieve Snapshot size directly from CnsQuerySnapshot once supported.
+	// Query capacity in MB, volume type and datastore url for block volume snapshot
+	volumeIds := []cnstypes.CnsVolumeId{{Id: volID}}
+	cnsVolumeDetailsMap, err := utils.QueryVolumeDetailsUtil(ctx, volManager, volumeIds)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := cnsVolumeDetailsMap[volID]; !ok {
+		return nil, logger.LogNewErrorCodef(log, codes.Internal,
+			"cns query volume did not retrieve the volume: %s", volID)
+	}
+	snapshotSizeInMB := cnsVolumeDetailsMap[volID].SizeInMB
+	snapshotsInfo := snapshotResult.Snapshot
+	snapshotCreateTimeInProto := timestamppb.New(snapshotsInfo.CreateTime)
+	csiSnapshotInfo := &csi.Snapshot{
+		SnapshotId:     volID + VSphereCSISnapshotIdDelimiter + snapID,
+		SourceVolumeId: volID,
+		CreationTime:   snapshotCreateTimeInProto,
+		SizeBytes:      snapshotSizeInMB * MbInBytes,
+		ReadyToUse:     true,
+	}
+	snapshots = append(snapshots, csiSnapshotInfo)
+	return snapshots, nil
+}
+
+func QueryAllVolumeSnapshots(ctx context.Context, volManager cnsvolume.Manager, token string, maxEntries int64) (
+	[]*csi.Snapshot, string, error) {
+	log := logger.GetLogger(ctx)
+	var csiSnapshots []*csi.Snapshot
+	var offset int64
+	var err error
+	limit := QuerySnapshotLimit
+	if maxEntries <= QuerySnapshotLimit {
+		// If the max results that can be handled by callers is lower than the default limit, then
+		// serve the results in a single call.
+		limit = maxEntries
+	}
+	if token != "" {
+		offset, err = strconv.ParseInt(token, 10, 64)
+		if err != nil {
+			log.Errorf("failed to parse the token: %s err: %v", token, err)
+			return nil, "", err
+		}
+	}
+	queryFilter := cnstypes.CnsSnapshotQueryFilter{
+		Cursor: &cnstypes.CnsCursor{
+			Offset: offset,
+			Limit:  limit,
+		},
+	}
+	queryResultEntries, nextToken, err := utils.QuerySnapshotsUtil(ctx, volManager, queryFilter, maxEntries)
+	if err != nil {
+		log.Errorf("failed to retrieve all the volume snapshots in inventory err: %+v", err)
+		return nil, "", err
+	}
+	//populate list of volume-ids to retrieve the volume size.
+	var volumeIds []cnstypes.CnsVolumeId
+	for _, queryResult := range queryResultEntries {
+		if queryResult.Error != nil {
+			return nil, "", logger.LogNewErrorCodef(log, codes.Internal,
+				"faults are not expected when invoking QuerySnapshots without volume-id and snapshot-id, fault: %+v",
+				queryResult.Error.Fault)
+		}
+		volumeIds = append(volumeIds, queryResult.Snapshot.VolumeId)
+	}
+	// TODO: Retrieve Snapshot size directly from CnsQuerySnapshot once supported.
+	cnsVolumeDetailsMap, err := utils.QueryVolumeDetailsUtil(ctx, volManager, volumeIds)
+	if err != nil {
+		log.Errorf("failed to retrieve volume details for volume-ids: %v, err: %+v", volumeIds, err)
+		return nil, "", err
+	}
+	for _, queryResult := range queryResultEntries {
+		snapshotCreateTimeInProto := timestamppb.New(queryResult.Snapshot.CreateTime)
+		csiSnapshotId := queryResult.Snapshot.VolumeId.Id + VSphereCSISnapshotIdDelimiter + queryResult.Snapshot.SnapshotId.Id
+		if _, ok := cnsVolumeDetailsMap[queryResult.Snapshot.VolumeId.Id]; !ok {
+			return nil, "", logger.LogNewErrorCodef(log, codes.Internal,
+				"cns query volume did not return the volume: %s", queryResult.Snapshot.VolumeId.Id)
+		}
+		csiSnapshotSize := cnsVolumeDetailsMap[queryResult.Snapshot.VolumeId.Id].SizeInMB * MbInBytes
+		csiSnapshotInfo := &csi.Snapshot{
+			SnapshotId:     csiSnapshotId,
+			SourceVolumeId: queryResult.Snapshot.VolumeId.Id,
+			CreationTime:   snapshotCreateTimeInProto,
+			SizeBytes:      csiSnapshotSize,
+			ReadyToUse:     true,
+		}
+		csiSnapshots = append(csiSnapshots, csiSnapshotInfo)
+	}
+	return csiSnapshots, nextToken, nil
+}
+
+func QueryVolumeSnapshotsByVolumeID(ctx context.Context, volManager cnsvolume.Manager, volumeID string,
+	maxEntries int64) ([]*csi.Snapshot, string, error) {
+	log := logger.GetLogger(ctx)
+	var csiSnapshots []*csi.Snapshot
+	limit := QuerySnapshotLimit
+	if maxEntries <= QuerySnapshotLimit {
+		limit = maxEntries
+	}
+	querySpec := cnstypes.CnsSnapshotQuerySpec{
+		VolumeId: cnstypes.CnsVolumeId{
+			Id: volumeID,
+		},
+	}
+	queryFilter := cnstypes.CnsSnapshotQueryFilter{
+		SnapshotQuerySpecs: []cnstypes.CnsSnapshotQuerySpec{querySpec},
+		Cursor: &cnstypes.CnsCursor{
+			Offset: 0,
+			Limit:  limit,
+		},
+	}
+	queryResultEntries, nextToken, err := utils.QuerySnapshotsUtil(ctx, volManager, queryFilter, maxEntries)
+	if err != nil {
+		log.Errorf("failed to retrieve csiSnapshots for volume-id: %s err: %+v", volumeID, err)
+		return nil, "", err
+	}
+	// Retrieve the volume size as an approximation for snapshot size.
+	// TODO: Retrieve Snapshot size directly from CnsQuerySnapshot once supported.
+	// Query capacity in MB and datastore url for block volume snapshot
+	volumeIds := []cnstypes.CnsVolumeId{{Id: volumeID}}
+	cnsVolumeDetailsMap, err := utils.QueryVolumeDetailsUtil(ctx, volManager, volumeIds)
+	if err != nil {
+		log.Errorf("failed to retrieve the volume: %s details. err: %+v.", volumeID, err)
+		return nil, "", err
+	}
+	for _, queryResult := range queryResultEntries {
+		// check if the queryResult has fault, if so, the specific result can be ignored.
+		if queryResult.Error != nil {
+			// Currently, CnsVolumeNotFoundFault is the only possible fault when QuerySnapshots is
+			// invoked with only volume-id
+			fault := queryResult.Error.Fault
+			if faultInfo, ok := fault.(cnstypes.CnsVolumeNotFoundFault); ok {
+				faultVolumeId := faultInfo.VolumeId.Id
+				log.Warnf("volume %s was not found during QuerySnapshots, ignore volume..", faultVolumeId)
+				continue
+			} else {
+				return csiSnapshots, nextToken, logger.LogNewErrorCodef(log, codes.Internal,
+					"unexpected fault %+v received in QuerySnapshots result: %+v for volume: %s", fault, queryResult, volumeID)
+			}
+		}
+		snapshotCreateTimeInProto := timestamppb.New(queryResult.Snapshot.CreateTime)
+		csiSnapshotId := queryResult.Snapshot.VolumeId.Id + VSphereCSISnapshotIdDelimiter + queryResult.Snapshot.SnapshotId.Id
+		if _, ok := cnsVolumeDetailsMap[queryResult.Snapshot.VolumeId.Id]; !ok {
+			return nil, "", logger.LogNewErrorCodef(log, codes.Internal,
+				"cns query volume did not return the volume: %s", queryResult.Snapshot.VolumeId.Id)
+		}
+		csiSnapshotSize := cnsVolumeDetailsMap[queryResult.Snapshot.VolumeId.Id].SizeInMB * MbInBytes
+		csiSnapshotInfo := &csi.Snapshot{
+			SnapshotId:     csiSnapshotId,
+			SourceVolumeId: queryResult.Snapshot.VolumeId.Id,
+			CreationTime:   snapshotCreateTimeInProto,
+			SizeBytes:      csiSnapshotSize,
+			ReadyToUse:     true,
+		}
+		csiSnapshots = append(csiSnapshots, csiSnapshotInfo)
+	}
+	return csiSnapshots, nextToken, nil
+}
+
+// Helper function to get Datastore object for given datastoreURL in the given
+// virtual center.
+func getDatastoreObj(ctx context.Context, vc *vsphere.VirtualCenter,
+	datastoreURL string) (*vsphere.Datastore, error) {
+	log := logger.GetLogger(ctx)
+	datacenters, err := vc.GetDatacenters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var datastoreObj *vsphere.Datastore
+	for _, datacenter := range datacenters {
+		datastoreObj, err = datacenter.GetDatastoreByURL(ctx, datastoreURL)
+		if err != nil {
+			log.Warnf("failed to find datastore with URL %q in datacenter %q from VC %q. Error: %+v",
+				datastoreURL, datacenter.InventoryPath, vc.Config.Host, err)
+		} else {
+			return datastoreObj, nil
+		}
+	}
+
+	return nil, logger.LogNewErrorf(log,
+		"Unable to find datastore for datastore URL %s in VC %+v", datastoreURL, vc)
+}
+
 // Helper function to get DatastoreMoRefs
 func getDatastoreMoRefs(datastores []*vsphere.DatastoreInfo) []vim25types.ManagedObjectReference {
 	var datastoreMoRefs []vim25types.ManagedObjectReference
@@ -596,4 +872,108 @@ func isExpansionRequired(ctx context.Context, volumeID string, requestedSize int
 	}
 
 	return currentSize < requestedSize, nil
+}
+
+// CreateSnapshotUtil is the helper function to create CNS snapshot for given volumeId
+//
+// The desc parameter denotes the snapshot description required by CNS CreateSnapshot API. This parameter is expected
+// to be filled with the CSI CreateSnapshotRequest Name, which is generated by the CSI snapshotter sidecar.
+//
+// The returned string is a combination of CNS VolumeID and CNS SnapshotID concatenated by the "+" sign.
+// The returned *time.Time denotes the creation time of snapshot from the storage system, i.e., CNS.
+func CreateSnapshotUtil(ctx context.Context, manager *Manager, volumeID string, snapshotName string) (string,
+	*time.Time, error) {
+	log := logger.GetLogger(ctx)
+
+	log.Debugf("vSphere CSI driver is creating snapshot with description, %q, on volume: %q", snapshotName, volumeID)
+	cnsSnapshotInfo, err := manager.VolumeManager.CreateSnapshot(ctx, volumeID, snapshotName)
+	if err != nil {
+		log.Errorf("failed to create snapshot on volume %q with description %q with error %+v",
+			volumeID, snapshotName, err)
+		return "", nil, err
+	}
+	log.Debugf("Successfully created snapshot %q with description, %q, on volume: %q at timestamp %q",
+		cnsSnapshotInfo.SnapshotID, snapshotName, volumeID, cnsSnapshotInfo.SnapshotCreationTimestamp)
+
+	csiSnapshotID := volumeID + VSphereCSISnapshotIdDelimiter + cnsSnapshotInfo.SnapshotID
+
+	return csiSnapshotID, &cnsSnapshotInfo.SnapshotCreationTimestamp, nil
+}
+
+// DeleteSnapshotUtil is the helper function to delete CNS snapshot for given snapshotId
+func DeleteSnapshotUtil(ctx context.Context, manager *Manager, csiSnapshotID string) error {
+	log := logger.GetLogger(ctx)
+
+	cnsVolumeID, cnsSnapshotID, err := ParseCSISnapshotID(csiSnapshotID)
+	if err != nil {
+		return err
+	}
+
+	log.Debugf("vSphere CSI driver is deleting snapshot %q on volume: %q", cnsSnapshotID, cnsVolumeID)
+	err = manager.VolumeManager.DeleteSnapshot(ctx, cnsVolumeID, cnsSnapshotID)
+	if err != nil {
+		return logger.LogNewErrorf(log, "failed to delete snapshot %q on volume %q with error %+v",
+			cnsSnapshotID, cnsVolumeID, err)
+	}
+	log.Debugf("Successfully deleted snapshot %q on volume %q", cnsSnapshotID, cnsVolumeID)
+
+	return nil
+}
+
+// GetNodeVMsWithAccessToDatastore finds out NodeVMs which have access to the given
+// datastore URL by using the moref approach.
+func GetNodeVMsWithAccessToDatastore(ctx context.Context, vc *vsphere.VirtualCenter, dsURL string,
+	allNodeVMs []*vsphere.VirtualMachine) ([]*object.VirtualMachine, error) {
+
+	log := logger.GetLogger(ctx)
+	var accessibleNodes []*object.VirtualMachine
+	totalNodes := len(allNodeVMs)
+
+	// Create map of allNodeVM refs to nil value for easy retrieval.
+	nodeMap := make(map[vim25types.ManagedObjectReference]struct{})
+	for _, vmObj := range allNodeVMs {
+		nodeMap[vmObj.Reference()] = struct{}{}
+	}
+
+	// Get datastore object.
+	dsObj, err := getDatastoreObj(ctx, vc, dsURL)
+	if err != nil {
+		return nil, logger.LogNewErrorf(log, "failed to retrieve datastore object using datastore "+
+			"URL %q. Error: %+v", dsURL, err)
+	}
+	// Get datastore host mounts.
+	var ds mo.Datastore
+	err = dsObj.Properties(ctx, dsObj.Reference(), []string{"host"}, &ds)
+	if err != nil {
+		return nil, logger.LogNewErrorf(log, "failed to get host mounts from datastore %q. Error: %+v",
+			dsURL, err)
+	}
+
+	// For each host mount, get the list of VMs.
+	for _, host := range ds.Host {
+		hostObj := &vsphere.HostSystem{
+			HostSystem: object.NewHostSystem(vc.Client.Client, host.Key),
+		}
+		var hs mo.HostSystem
+		err = hostObj.Properties(ctx, hostObj.Reference(), []string{"vm"}, &hs)
+		if err != nil {
+			return nil, logger.LogNewErrorf(log, "failed to retrieve virtual machines from host %q. Error: %+v",
+				hostObj.String(), err)
+		}
+		// For each VM on the host, check if the VM is a NodeVM participating in the k8s cluster.
+		for _, vm := range hs.Vm {
+			if _, exists := nodeMap[vm]; exists {
+				accessibleNodes = append(accessibleNodes, object.NewVirtualMachine(vc.Client.Client, vm))
+			}
+			// Check if the length of accessible nodes is equal to total count of
+			// NodeVMs in this cluster. If yes, we can stop searching for more VMs.
+			if len(accessibleNodes) == totalNodes {
+				log.Infof("Nodes that have access to datastore %q are %+v", dsURL, accessibleNodes)
+				return accessibleNodes, nil
+			}
+		}
+
+	}
+	log.Infof("Nodes that have access to datastore %q are %+v", dsURL, accessibleNodes)
+	return accessibleNodes, nil
 }

@@ -330,3 +330,68 @@ func getCnsVolumeInfoFromTaskResult(ctx context.Context, virtualCenter *cnsvsphe
 		VolumeID:     volumeID,
 	}, nil
 }
+
+// invokeCNSCreateSnapshot invokes CreateSnapshot operation for that volume on CNS.
+func invokeCNSCreateSnapshot(ctx context.Context, virtualCenter *cnsvsphere.VirtualCenter,
+	volumeID string, snapshotName string) (*object.Task, error) {
+	log := logger.GetLogger(ctx)
+	var cnsSnapshotCreateSpecList []cnstypes.CnsSnapshotCreateSpec
+	cnsSnapshotCreateSpec := cnstypes.CnsSnapshotCreateSpec{
+		VolumeId: cnstypes.CnsVolumeId{
+			Id: volumeID,
+		},
+		Description: snapshotName,
+	}
+	cnsSnapshotCreateSpecList = append(cnsSnapshotCreateSpecList, cnsSnapshotCreateSpec)
+
+	log.Infof("Calling CnsClient.CreateSnapshots: VolumeID [%q] Description [%q]"+
+		" cnsSnapshotCreateSpecList [%#v]", volumeID, snapshotName, cnsSnapshotCreateSpecList)
+	task, err := virtualCenter.CnsClient.CreateSnapshots(ctx, cnsSnapshotCreateSpecList)
+	if err != nil {
+		log.Errorf("CNS CreateSnapshots failed from vCenter %q with err: %v", virtualCenter.Config.Host, err)
+		return nil, err
+	}
+
+	return task, err
+}
+
+// invokeCNSDeleteSnapshot invokes DeleteSnapshot operation for that volume on CNS.
+func invokeCNSDeleteSnapshot(ctx context.Context, virtualCenter *cnsvsphere.VirtualCenter,
+	volumeID string, snapshotID string) (*object.Task, error) {
+	log := logger.GetLogger(ctx)
+	var cnsSnapshotDeleteSpecList []cnstypes.CnsSnapshotDeleteSpec
+	cnsSnapshotDeleteSpec := cnstypes.CnsSnapshotDeleteSpec{
+		VolumeId: cnstypes.CnsVolumeId{
+			Id: volumeID,
+		},
+		SnapshotId: cnstypes.CnsSnapshotId{
+			Id: snapshotID,
+		},
+	}
+	cnsSnapshotDeleteSpecList = append(cnsSnapshotDeleteSpecList, cnsSnapshotDeleteSpec)
+
+	// Call the CNS DeleteSnapshots
+	log.Infof("Calling CnsClient.DeleteSnapshots: VolumeID [%q] SnapshotID [%q] "+
+		"cnsSnapshotDeleteSpecList [%#v]", volumeID, snapshotID, cnsSnapshotDeleteSpec)
+	deleteSnapshotsTask, err := virtualCenter.CnsClient.DeleteSnapshots(ctx, cnsSnapshotDeleteSpecList)
+	if err != nil {
+		log.Errorf("CNS DeleteSnapshots failed from vCenter %q with err: %v", virtualCenter.Config.Host, err)
+		return nil, err
+	}
+
+	return deleteSnapshotsTask, err
+}
+
+// getPendingCreateSnapshotTaskFromMap returns the CreateSnapshot task for a snapshot
+// stored in the snapshotTaskMap.
+func getPendingCreateSnapshotTaskFromMap(ctx context.Context, snapshotName string) *object.Task {
+	var task *object.Task
+	log := logger.GetLogger(ctx)
+	taskDetailsInMap, ok := snapshotTaskMap[snapshotName]
+	if ok {
+		task = taskDetailsInMap.task
+		log.Infof("CreateSnapshot task still pending for Snapshot: %q, with taskInfo: %+v",
+			snapshotName, task)
+	}
+	return task
+}

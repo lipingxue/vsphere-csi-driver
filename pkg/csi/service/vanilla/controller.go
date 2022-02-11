@@ -1072,9 +1072,7 @@ func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	}
 
 	resp, err := controllerExpandVolumeInternal()
-	log := logger.GetLogger(ctx)
 	if err != nil {
-		log.Debugf("controllerExpandVolumeInternal: returns fault %q for volume %q", faultType, req.VolumeId)
 		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusExpandVolumeOpType,
 			prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
 	} else {

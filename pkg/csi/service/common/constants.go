@@ -225,6 +225,13 @@ const (
 	// TriggerCsiFullSyncCRName is the instance name of TriggerCsiFullSync
 	// All other names will be rejected by TriggerCsiFullSync controller
 	TriggerCsiFullSyncCRName = "csifullsync"
+
+	// QuerySnapshotLimit is the maximum number of snapshots that can be retrieved per QuerySnapshot call.
+	// The 128 size limit is specified by CNS QuerySnapshot API.
+	QuerySnapshotLimit = int64(128)
+
+	// VSphereCSISnapshotIdDelimiter is the delimiter for concatenating CNS VolumeID and CNS SnapshotID
+	VSphereCSISnapshotIdDelimiter = "+"
 )
 
 // Supported container orchestrators
