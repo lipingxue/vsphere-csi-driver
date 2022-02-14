@@ -19,6 +19,7 @@ package wcpguest
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -168,18 +169,21 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 		return err
 	}
 	// Go module to keep the metrics http server running all the time.
-	go func() {
-		prometheus.CsiInfo.WithLabelValues(version).Set(1)
-		for {
-			log.Info("Starting the http server to expose Prometheus metrics..")
-			http.Handle("/metrics", promhttp.Handler())
-			err = http.ListenAndServe(":2112", nil)
-			if err != nil {
-				log.Warnf("Http server that exposes the Prometheus exited with err: %+v", err)
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		go func() {
+			prometheus.CsiInfo.WithLabelValues(version).Set(1)
+			for {
+				log.Info("Starting the http server to expose Prometheus metrics..")
+				http.Handle("/metrics", promhttp.Handler())
+				err = http.ListenAndServe(":2112", nil)
+				if err != nil {
+					log.Warnf("Http server that exposes the Prometheus exited with err: %+v", err)
+				}
+				log.Info("Restarting http server to expose Prometheus metrics..")
 			}
-			log.Info("Restarting http server to expose Prometheus metrics..")
-		}
-	}()
+		}()
+	}
 	return nil
 }
 
@@ -379,12 +383,15 @@ func (c *controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	resp, faultType, err := createVolumeInternal()
 	log := logger.GetLogger(ctx)
 	log.Debugf("createVolumeInternal: returns fault %q", faultType)
-	if err != nil {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusCreateVolumeOpType,
-			prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusCreateVolumeOpType,
-			prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusCreateVolumeOpType,
+				prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusCreateVolumeOpType,
+				prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -452,12 +459,15 @@ func (c *controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 	resp, faultType, err := deleteVolumeInternal()
 	log := logger.GetLogger(ctx)
 	log.Debugf("deleteVolumeInternal: returns fault %q for volume %q", faultType, req.VolumeId)
-	if err != nil {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDeleteVolumeOpType,
-			prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDeleteVolumeOpType,
-			prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDeleteVolumeOpType,
+				prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDeleteVolumeOpType,
+				prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -510,13 +520,16 @@ func (c *controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 
 	resp, faultType, err := controllerPublishVolumeInternal()
 	log := logger.GetLogger(ctx)
-	if err != nil {
-		log.Debugf("controllerPublishVolumeInternal: returns fault %q for volume %q", faultType, req.VolumeId)
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusAttachVolumeOpType,
-			prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusAttachVolumeOpType,
-			prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			log.Debugf("controllerPublishVolumeInternal: returns fault %q for volume %q", faultType, req.VolumeId)
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusAttachVolumeOpType,
+				prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusAttachVolumeOpType,
+				prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -857,12 +870,15 @@ func (c *controller) ControllerUnpublishVolume(ctx context.Context, req *csi.Con
 	resp, faultType, err := controllerUnpublishVolumeInternal()
 	log := logger.GetLogger(ctx)
 	log.Debugf("controllerUnpublishVolumeInternal: returns fault %q for volume %q", faultType, req.VolumeId)
-	if err != nil {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDetachVolumeOpType,
-			prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDetachVolumeOpType,
-			prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDetachVolumeOpType,
+				prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusDetachVolumeOpType,
+				prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -1226,12 +1242,15 @@ func (c *controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	resp, faultType, err := controllerExpandVolumeInternal()
 	log := logger.GetLogger(ctx)
 	log.Debugf("controllerExpandVolumeInternal: returns fault %q for volume %q", faultType, req.VolumeId)
-	if err != nil {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusExpandVolumeOpType,
-			prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusExpandVolumeOpType,
-			prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusExpandVolumeOpType,
+				prometheus.PrometheusFailStatus, namespace).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, prometheus.PrometheusExpandVolumeOpType,
+				prometheus.PrometheusPassStatus, namespace).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }

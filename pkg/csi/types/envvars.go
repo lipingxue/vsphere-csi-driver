@@ -43,4 +43,6 @@ const (
 	// Depending on the value, either controller and node service will be
 	// activated (The identity service is always activated).
 	EnvVarMode = "X_CSI_MODE"
+
+	EnvEnableMetric = "ENABLE_METRIC"
 )

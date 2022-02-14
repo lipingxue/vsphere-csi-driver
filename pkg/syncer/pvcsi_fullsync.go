@@ -18,7 +18,9 @@ package syncer
 
 import (
 	"context"
+	"os"
 	"reflect"
+	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -29,6 +31,7 @@ import (
 	cnsconfig "sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/config"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/prometheus"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/service/logger"
+	csitypes "sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/types"
 )
 
 // PvcsiFullSync reconciles PV/PVC/Pod metadata on the guest cluster with
@@ -43,8 +46,11 @@ func PvcsiFullSync(ctx context.Context, metadataSyncer *metadataSyncInformer) er
 		if err != nil {
 			fullSyncStatus = prometheus.PrometheusFailStatus
 		}
-		prometheus.FullSyncOpsHistVec.WithLabelValues(fullSyncStatus).Observe(
-			(time.Since(fullSyncStartTime)).Seconds())
+		metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+		if strings.EqualFold(metricEnable, "enable") {
+			prometheus.FullSyncOpsHistVec.WithLabelValues(fullSyncStatus).Observe(
+				(time.Since(fullSyncStartTime)).Seconds())
+		}
 	}()
 
 	// guestCnsVolumeMetadataList is an in-memory list of cnsvolumemetadata

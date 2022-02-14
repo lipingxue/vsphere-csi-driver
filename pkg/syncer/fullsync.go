@@ -18,6 +18,8 @@ package syncer
 
 import (
 	"context"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	csitypes "sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/types"
 
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/apis/migration"
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/cns-lib/vsphere"
@@ -51,8 +54,11 @@ func CsiFullSync(ctx context.Context, metadataSyncer *metadataSyncInformer) erro
 		if err != nil {
 			fullSyncStatus = prometheus.PrometheusFailStatus
 		}
-		prometheus.FullSyncOpsHistVec.WithLabelValues(fullSyncStatus).Observe(
-			(time.Since(fullSyncStartTime)).Seconds())
+		metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+		if strings.EqualFold(metricEnable, "enable") {
+			prometheus.FullSyncOpsHistVec.WithLabelValues(fullSyncStatus).Observe(
+				(time.Since(fullSyncStartTime)).Seconds())
+		}
 	}()
 
 	// Get K8s PVs in State "Bound", "Available" or "Released".

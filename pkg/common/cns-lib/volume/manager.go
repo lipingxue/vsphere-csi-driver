@@ -19,6 +19,7 @@ package volume
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ import (
 	csifault "sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/fault"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/prometheus"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/service/logger"
+	csitypes "sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/types"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/internalapis/cnsvolumeoperationrequest"
 )
 
@@ -572,12 +574,15 @@ func (m *defaultManager) CreateVolume(ctx context.Context, spec *cnstypes.CnsVol
 	resp, faultType, err := internalCreateVolume()
 	log := logger.GetLogger(ctx)
 	log.Debugf("internalCreateVolume: returns fault %q", faultType)
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateVolumeOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateVolumeOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateVolumeOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateVolumeOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 
 	return resp, faultType, err
@@ -672,12 +677,15 @@ func (m *defaultManager) AttachVolume(ctx context.Context,
 	resp, faultType, err := internalAttachVolume()
 	log := logger.GetLogger(ctx)
 	log.Debugf("internalAttachVolume: returns fault %q for volume %q", faultType, volumeID)
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsAttachVolumeOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsAttachVolumeOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsAttachVolumeOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsAttachVolumeOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, faultType, err
 }
@@ -793,12 +801,15 @@ func (m *defaultManager) DetachVolume(ctx context.Context, vm *cnsvsphere.Virtua
 	faultType, err := internalDetachVolume()
 	log := logger.GetLogger(ctx)
 	log.Debugf("internalDetachVolume: returns fault %q for volume %q", faultType, volumeID)
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDetachVolumeOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDetachVolumeOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDetachVolumeOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDetachVolumeOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return faultType, err
 }
@@ -830,12 +841,15 @@ func (m *defaultManager) DeleteVolume(ctx context.Context, volumeID string, dele
 	faultType, err := internalDeleteVolume()
 	log := logger.GetLogger(ctx)
 	log.Debugf("internalDeleteVolume: returns fault %q for volume %q", faultType, volumeID)
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteVolumeOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteVolumeOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteVolumeOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteVolumeOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return faultType, err
 }
@@ -1109,12 +1123,15 @@ func (m *defaultManager) UpdateVolumeMetadata(ctx context.Context, spec *cnstype
 	}
 	start := time.Now()
 	err := internalUpdateVolumeMetadata()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsUpdateVolumeMetadataOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsUpdateVolumeMetadataOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsUpdateVolumeMetadataOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsUpdateVolumeMetadataOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return err
 }
@@ -1147,12 +1164,15 @@ func (m *defaultManager) ExpandVolume(ctx context.Context, volumeID string, size
 	faultType, err := internalExpandVolume()
 	log := logger.GetLogger(ctx)
 	log.Debugf("internalExpandVolume: returns fault %q for volume %q", faultType, volumeID)
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsExpandVolumeOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsExpandVolumeOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsExpandVolumeOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsExpandVolumeOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return faultType, err
 }
@@ -1418,12 +1438,15 @@ func (m *defaultManager) QueryVolume(ctx context.Context,
 	}
 	start := time.Now()
 	resp, err := internalQueryVolume()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryVolumeOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryVolumeOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryVolumeOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryVolumeOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -1454,12 +1477,15 @@ func (m *defaultManager) QueryAllVolume(ctx context.Context, queryFilter cnstype
 	}
 	start := time.Now()
 	resp, err := internalQueryAllVolume()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryAllVolumeOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryAllVolumeOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryAllVolumeOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryAllVolumeOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -1518,12 +1544,15 @@ func (m *defaultManager) QueryVolumeInfo(ctx context.Context,
 	}
 	start := time.Now()
 	resp, err := internalQueryVolumeInfo()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryVolumeInfoOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryVolumeInfoOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryVolumeInfoOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsQueryVolumeInfoOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -1553,12 +1582,15 @@ func (m *defaultManager) RelocateVolume(ctx context.Context,
 	}
 	start := time.Now()
 	resp, err := internalRelocateVolume()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsRelocateVolumeOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsRelocateVolumeOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsRelocateVolumeOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsRelocateVolumeOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -1620,12 +1652,15 @@ func (m *defaultManager) ConfigureVolumeACLs(ctx context.Context, spec cnstypes.
 	}
 	start := time.Now()
 	err := internalConfigureVolumeACLs()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsConfigureVolumeACLOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsConfigureVolumeACLOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsConfigureVolumeACLOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsConfigureVolumeACLOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return err
 }
@@ -1790,12 +1825,15 @@ func (m *defaultManager) QuerySnapshots(ctx context.Context, snapshotQueryFilter
 	}
 	start := time.Now()
 	resp, err := internalQuerySnapshots()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusQuerySnapshotsOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusQuerySnapshotsOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusQuerySnapshotsOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusQuerySnapshotsOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }
@@ -2005,12 +2043,15 @@ func (m *defaultManager) CreateSnapshot(
 
 	start := time.Now()
 	cnsSnapshotInfo, err := internalCreateSnapshot()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateSnapshotOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateSnapshotOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateSnapshotOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsCreateSnapshotOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return cnsSnapshotInfo, err
 }
@@ -2176,12 +2217,15 @@ func (m *defaultManager) DeleteSnapshot(ctx context.Context, volumeID string, sn
 
 	start := time.Now()
 	err := internalDeleteSnapshot()
-	if err != nil {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteSnapshotOpType,
-			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteSnapshotOpType,
-			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		if err != nil {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteSnapshotOpType,
+				prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsDeleteSnapshotOpType,
+				prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+		}
 	}
 	return err
 }

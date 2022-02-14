@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+	csitypes "sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/types"
 
 	vmoperatortypes "github.com/vmware-tanzu/vm-operator-api/api/v1alpha1"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -498,14 +499,18 @@ func (r *ReconcileCnsNodeVMAttachment) Reconcile(ctx context.Context,
 	}
 	resp, err := reconcileCnsNodeVMAttachmentInternal()
 
-	if (err != nil || resp != reconcile.Result{}) {
-		// When reconciler returns reconcile.Result{RequeueAfter: timeout}, the err will be set to nil,
-		// for this case, we need count it as an attach/detach failure
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, volumeOpType,
-			prometheus.PrometheusFailStatus, request.Namespace).Observe(time.Since(start).Seconds())
-	} else {
-		prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, volumeOpType,
-			prometheus.PrometheusPassStatus, request.Namespace).Observe(time.Since(start).Seconds())
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+
+		if (err != nil || resp != reconcile.Result{}) {
+			// When reconciler returns reconcile.Result{RequeueAfter: timeout}, the err will be set to nil,
+			// for this case, we need count it as an attach/detach failure
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, volumeOpType,
+				prometheus.PrometheusFailStatus, request.Namespace).Observe(time.Since(start).Seconds())
+		} else {
+			prometheus.CsiControlOpsHistVec.WithLabelValues(volumeType, volumeOpType,
+				prometheus.PrometheusPassStatus, request.Namespace).Observe(time.Since(start).Seconds())
+		}
 	}
 	return resp, err
 }

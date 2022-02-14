@@ -18,6 +18,8 @@ package syncer
 
 import (
 	"context"
+	"os"
+	"strings"
 	"time"
 
 	cnstypes "github.com/vmware/govmomi/cns/types"
@@ -26,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	csitypes "sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/types"
 
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/prometheus"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/service/common"
@@ -124,10 +127,13 @@ func csiGetVolumeHealthStatus(ctx context.Context, k8sclient clientset.Interface
 			inaccessibleVolumeCount += 1
 		}
 	}
-	prometheus.VolumeHealthGaugeVec.WithLabelValues(
-		prometheus.PrometheusAccessibleVolumes).Set(float64(accessibleVolumeCount))
-	prometheus.VolumeHealthGaugeVec.WithLabelValues(
-		prometheus.PrometheusInaccessibleVolumes).Set(float64(inaccessibleVolumeCount))
+	metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+	if strings.EqualFold(metricEnable, "enable") {
+		prometheus.VolumeHealthGaugeVec.WithLabelValues(
+			prometheus.PrometheusAccessibleVolumes).Set(float64(accessibleVolumeCount))
+		prometheus.VolumeHealthGaugeVec.WithLabelValues(
+			prometheus.PrometheusInaccessibleVolumes).Set(float64(inaccessibleVolumeCount))
+	}
 
 	log.Infof("GetVolumeHealthStatus: end")
 }

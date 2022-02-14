@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/prometheus"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/kubernetes-csi/csi-lib-utils/leaderelection"
 	cnstypes "github.com/vmware/govmomi/cns/types"
+	csitypes "sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/types"
 
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/common/config"
 	"sigs.k8s.io/vsphere-csi-driver/v2/pkg/csi/service/common/commonco"
@@ -109,18 +111,21 @@ func main() {
 		}
 
 		// Go module to keep the metrics http server running all the time.
-		go func() {
-			prometheus.SyncerInfo.WithLabelValues(syncer.Version).Set(1)
-			for {
-				log.Info("Starting the http server to expose Prometheus metrics..")
-				http.Handle("/metrics", promhttp.Handler())
-				err = http.ListenAndServe(":2113", nil)
-				if err != nil {
-					log.Warnf("Http server that exposes the Prometheus exited with err: %+v", err)
+		metricEnable := os.Getenv(csitypes.EnvEnableMetric)
+		if strings.EqualFold(metricEnable, "enable") {
+			go func() {
+				prometheus.SyncerInfo.WithLabelValues(syncer.Version).Set(1)
+				for {
+					log.Info("Starting the http server to expose Prometheus metrics..")
+					http.Handle("/metrics", promhttp.Handler())
+					err = http.ListenAndServe(":2113", nil)
+					if err != nil {
+						log.Warnf("Http server that exposes the Prometheus exited with err: %+v", err)
+					}
+					log.Info("Restarting http server to expose Prometheus metrics..")
 				}
-				log.Info("Restarting http server to expose Prometheus metrics..")
-			}
-		}()
+			}()
+		}
 
 		// Initialize syncer components that are dependant on the outcome of
 		// leader election, if enabled.
