@@ -120,6 +120,19 @@ var (
 		// Possible status - "pass", "fail"
 		[]string{"voltype", "optype", "status", "namespace"})
 
+	TestControlOpsHistVec = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "test_csi_volume_ops_histogram",
+		Help: "Histogram vector for Test volume operations.",
+		// Creating more buckets for operations that takes few seconds and less buckets
+		// for those that are taking a long time. A CSI operation taking a long time is
+		// unexpected and we don't have to be accurate(just approximation is fine).
+		Buckets: []float64{1, 2, 3, 4, 5, 7, 10, 12, 15, 18, 20, 25, 30, 60, 120, 180, 300},
+	},
+		// Possible voltype - "unknown", "block", "file"
+		// Possible optype - "create-volume", "delete-volume", "attach-volume", "detach-volume", "expand-volume"
+		// Possible status - "pass", "fail"
+		[]string{"voltype", "optype", "status", "namespace"})
+
 	// CnsControlOpsHistVec is a histogram vector metric to observe various control
 	// operations on CNS. Note that this captures the time taken by CNS into a bucket
 	// as seen by the client(CSI in this case).
