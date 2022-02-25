@@ -125,10 +125,12 @@ func (k8sCloudOperator *k8sCloudOperator) GetPodVMUUIDAnnotation(ctx context.Con
 		log.Errorf(errMsg)
 		return nil, fmt.Errorf(errMsg)
 	}
+	log.Infof("PV for volumeID: %s has claim: %s, claimNamespace: %s", volumeID, pv.Spec.ClaimRef.Name, pv.Spec.ClaimRef.Namespace)
 	podResult, err := k8sCloudOperator.getPod(ctx, pv.Spec.ClaimRef.Name, pv.Spec.ClaimRef.Namespace, nodeName)
 	if err != nil {
 		return nil, err
 	}
+
 	podName := podResult.Name
 	podNamespace := podResult.Namespace
 	err = wait.Poll(pollTime, timeout, func() (bool, error) {
@@ -222,12 +224,44 @@ func (k8sCloudOperator *k8sCloudOperator) getPod(ctx context.Context, pvcName st
 	})
 
 	if err != nil {
-		errMsg := fmt.Sprintf("Cannot find pod with namespace: %s running on node: %s with error %+v",
+		return nil, logger.LogNewErrorf(log, "Cannot find pods in Pending state on namespace: %s running on node: %s with error %+v",
 			pvcNamespace, nodeName, err)
-		log.Errorf(errMsg)
-		return nil, fmt.Errorf(errMsg)
 	}
-	log.Debugf("Returned pods: %+v with namespace: %s running on node: %s", spew.Sdump(pods), pvcNamespace, nodeName)
+
+	pendingPodsInfo := ""
+	for _, pod := range pods.Items {
+		pendingPodsInfo += fmt.Sprintf("Pod name: %s on namespace: %s with phase: %s", pod.Name, pod.Namespace, pod.Status.Phase)
+		for _, volume := range pod.Spec.Volumes {
+			pvClaim := volume.VolumeSource.PersistentVolumeClaim
+			if pvClaim != nil {
+				pendingPodsInfo += fmt.Sprintf(" having PV claim name: %s ", pvClaim.ClaimName)
+			}
+		}
+		pendingPodsInfo += " --||-- "
+	}
+	log.Infof("Returned pending pods: %s with namespace: %s running on node: %s", pendingPodsInfo, pvcNamespace, nodeName)
+
+	podsAll, err := k8sCloudOperator.k8sClient.CoreV1().Pods(pvcNamespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fields.AndSelectors(
+			fields.SelectorFromSet(fields.Set{"spec.nodeName": string(nodeName)})).String(),
+	})
+	if err != nil {
+		return nil, logger.LogNewErrorf(log, "Cannot find all pods on namespace: %s running on node: %s with error %+v",
+			pvcNamespace, nodeName, err)
+	}
+
+	podsInfo := ""
+	for _, pod := range podsAll.Items {
+		podsInfo += fmt.Sprintf("Pod name: %s on namespace: %s with phase: %s", pod.Name, pod.Namespace, pod.Status.Phase)
+		for _, volume := range pod.Spec.Volumes {
+			pvClaim := volume.VolumeSource.PersistentVolumeClaim
+			if pvClaim != nil {
+				podsInfo += fmt.Sprintf(" having PV claim name: %s ", pvClaim.ClaimName)
+			}
+		}
+		podsInfo += " --||-- "
+	}
+	log.Infof("Returned all pods: %s with namespace: %s running on node: %s", podsInfo, pvcNamespace, nodeName)
 
 	// Identify the pod that a volume with name "pvcName" associated with it.
 	for _, pod := range pods.Items {
@@ -235,7 +269,7 @@ func (k8sCloudOperator *k8sCloudOperator) getPod(ctx context.Context, pvcName st
 			pvClaim := volume.VolumeSource.PersistentVolumeClaim
 			if pvClaim != nil && pvClaim.ClaimName == pvcName {
 				log.Debugf("Returned pod: %s", spew.Sdump(&pod))
-				log.Infof("Returned pod: %s/%s with pvClaim name: %s running on node: %s",
+				log.Infof("Found Returned pod: %s/%s with pvClaim name: %s running on node: %s",
 					pod.Name, pod.Namespace, pvcName, nodeName)
 				return &pod, nil
 			}
