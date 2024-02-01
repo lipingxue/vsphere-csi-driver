@@ -35,6 +35,7 @@ import (
 	volumes "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/volume"
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/vsphere"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/prometheus"
+	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/utils"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/common/commonco"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/logger"
@@ -122,6 +123,49 @@ func CsiFullSync(ctx context.Context, metadataSyncer *metadataSyncInformer, vc s
 	}
 	log.Debugf("FullSync for VC %s: pvToPVCMap %v", vc, pvToPVCMap)
 	log.Debugf("FullSyncfor VC %s: pvcToPodMap %v", vc, pvcToPodMap)
+
+	// Liping Test code for storage quota
+	k8sNamespaceVolMap := make(map[string][]string)
+	for _, pv := range k8sPVs {
+		if pv.Spec.CSI != nil {
+			if pvc, ok := pvToPVCMap[pv.Name]; ok {
+				k8sNamespaceVolMap[pvc.Namespace] = append(k8sNamespaceVolMap[pvc.Namespace], pv.Spec.CSI.VolumeHandle)
+			}
+		}
+	}
+
+	log.Infof("Liping test: k8sNamespaceVolMap %v", k8sNamespaceVolMap)
+	k8sNamespaceQuotaMap := make(map[string]int64)
+	for ns, volumes := range k8sNamespaceVolMap {
+		k8sNamespaceQuotaMap[ns] = 0
+		for _, volumeID := range volumes {
+			queryFilter := cnstypes.CnsQueryFilter{
+				VolumeIds: []cnstypes.CnsVolumeId{
+					{
+						Id: volumeID,
+					},
+				},
+			}
+			queryResult, err := utils.QueryVolumeUtil(ctx, metadataSyncer.volumeManager, queryFilter,
+				nil, metadataSyncer.coCommonInterface.IsFSSEnabled(ctx, common.AsyncQueryVolume))
+			if err != nil {
+				log.Errorf("Liping test: QueryVolumeUtil failed with err=%+v", err.Error())
+			}
+			if queryResult != nil && len(queryResult.Volumes) == 1 {
+				pvcSize := queryResult.Volumes[0].BackingObjectDetails.GetCnsBackingObjectDetails().CapacityInMb
+				//TODO: the aggregatedSnapshotCapacityInMb is not returned by CNS yet, currently, hard code it to pvcSize
+				//aggregatedSnapshotSize := queryResult.Volumes[0].BackingObjectDetails.GetCnsBackingObjectDetails().aggregatedSnapshotCapacityInMb
+				aggregatedSnapshotSize := pvcSize
+				log.Infof("Liping test: Volume: %q in namespace %s with size:%d snapshot size:%d.",
+					volumeID, ns, pvcSize, aggregatedSnapshotSize)
+
+				k8sNamespaceQuotaMap[ns] += pvcSize
+				k8sNamespaceQuotaMap[ns] += aggregatedSnapshotSize
+			}
+		}
+		log.Infof("Liping test: total storage used in MB for namespace %s:%d", ns, k8sNamespaceQuotaMap[ns])
+	}
+
 	// Call CNS QueryAll to get container volumes by cluster ID.
 	queryFilter := cnstypes.CnsQueryFilter{
 		ContainerClusterIds: []string{
