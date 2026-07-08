@@ -1083,9 +1083,7 @@ func checkExistingPVCDataSourceRef(ctx context.Context, k8sclient clientset.Inte
 // CnsRegisterVolume instance.
 func validateCnsRegisterVolumeSpec(ctx context.Context, instance *cnsregistervolumev1alpha1.CnsRegisterVolume) error {
 	var msg string
-	if instance.Spec.VolumeID != "" && instance.Spec.DiskURLPath != "" {
-		msg = "VolumeID and DiskURLPath cannot be specified together"
-	} else if instance.Spec.DiskURLPath != "" && instance.Spec.AccessMode != "" &&
+	if instance.Spec.DiskURLPath != "" && instance.Spec.AccessMode != "" &&
 		instance.Spec.AccessMode != v1.ReadWriteOnce {
 		if isSharedDiskEnabled {
 			if instance.Spec.AccessMode == v1.ReadWriteMany &&

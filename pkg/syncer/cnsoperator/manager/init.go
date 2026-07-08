@@ -368,6 +368,40 @@ func InitCnsOperator(ctx context.Context, clusterFlavor cnstypes.CnsClusterFlavo
 				return err
 			}
 		}
+
+		if cnsOperator.coCommonInterface.IsFSSEnabled(ctx, common.VKSRegisterVolume) {
+			// Create VKSRegisterVolume CRD from manifest.
+			log.Infof("Creating %q CRD", cnsoperatorv1alpha1.VKSRegisterVolumePlural)
+			err = k8s.CreateCustomResourceDefinitionFromManifest(ctx,
+				cnsoperatorconfig.EmbedVKSRegisterVolumeCRFile,
+				cnsoperatorconfig.EmbedVKSRegisterVolumeCRFileName)
+			if err != nil {
+				log.Errorf("Failed to create %q CRD. Err: %+v", cnsoperatorv1alpha1.VKSRegisterVolumePlural, err)
+				return err
+			}
+			log.Infof("%q CRD is created successfully", cnsoperatorv1alpha1.VKSRegisterVolumePlural)
+
+			// Clean up routine to cleanup successful VKSRegisterVolume instances.
+			log.Info("Starting go routine to cleanup successful VKSRegisterVolume instances.")
+			err = watcher(ctx, cnsOperator)
+			if err != nil {
+				log.Errorf("Failed to watch on config file for changes to "+
+					"CnsRegisterVolumesCleanupIntervalInMin for VKSRegisterVolume. Error: %+v", err)
+				return err
+			}
+			go func() {
+				for {
+					ctx, log = logger.GetNewContextWithLogger()
+					log.Infof("Triggering VKSRegisterVolume cleanup routine")
+					cleanUpVKSRegisterVolumeInstances(ctx, restConfig,
+						cnsOperator.configInfo.Cfg.Global.CnsRegisterVolumesCleanupIntervalInMin)
+					log.Infof("Completed VKSRegisterVolume cleanup")
+					for i := 1; i <= cnsOperator.configInfo.Cfg.Global.CnsRegisterVolumesCleanupIntervalInMin; i++ {
+						time.Sleep(time.Duration(1 * time.Minute))
+					}
+				}
+			}()
+		}
 	}
 
 	// Initialize the global scheme once before creating the manager

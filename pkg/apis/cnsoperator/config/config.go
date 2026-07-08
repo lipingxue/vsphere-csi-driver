@@ -27,6 +27,11 @@ var EmbedCnsRegisterVolumeCRFile embed.FS
 
 const EmbedCnsRegisterVolumeCRFileName = "cnsregistervolume_crd.yaml"
 
+//go:embed vksregistervolume_crd.yaml
+var EmbedVKSRegisterVolumeCRFile embed.FS
+
+const EmbedVKSRegisterVolumeCRFileName = "vksregistervolume_crd.yaml"
+
 //go:embed cnsunregistervolume_crd.yaml
 var EmbedCnsUnregisterVolumeCRFile embed.FS
 

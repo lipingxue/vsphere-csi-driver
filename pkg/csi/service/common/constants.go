@@ -597,6 +597,10 @@ const (
 	// HighPVNodeDensity is an FSS for guest cluster nodes that, when enabled,
 	// raises MAX_VOLUMES_PER_NODE from 59 to 255 in NodeGetInfo responses.
 	HighPVNodeDensity = "high-pv-node-density"
+	// VKSRegisterVolume gates the VKSRegisterVolume operator in the VKS (guest) cluster.
+	// Requires the flag in both the guest internal-feature-states ConfigMap and the
+	// Supervisor csi-feature-states ConfigMap.
+	VKSRegisterVolume = "vks-register-volume"
 	// CSI_Backup_API is an WCP capability for Changed Block Tracking(CBT) support in CNS-CSI.
 	// This is a feature to support Changed Block Tracking (CBT) for efficient
 	// backup and restore operations using CSI SnapshotMetadata service.

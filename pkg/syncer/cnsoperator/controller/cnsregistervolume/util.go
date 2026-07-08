@@ -210,7 +210,13 @@ func constructCreateSpecForInstance(ctx context.Context, r *ReconcileCnsRegister
 			ContainerCluster: containerCluster,
 		},
 	}
-	if instance.Spec.VolumeID != "" {
+	if instance.Spec.VolumeID != "" && instance.Spec.DiskURLPath != "" {
+		// Both set: CNS locates the VMDK by URL and stamps the FCD UUID onto it.
+		createSpec.BackingObjectDetails = &cnstypes.CnsBlockBackingDetails{
+			BackingDiskId:      instance.Spec.VolumeID,
+			BackingDiskUrlPath: instance.Spec.DiskURLPath,
+		}
+	} else if instance.Spec.VolumeID != "" {
 		createSpec.BackingObjectDetails = &cnstypes.CnsBlockBackingDetails{
 			BackingDiskId: instance.Spec.VolumeID,
 		}

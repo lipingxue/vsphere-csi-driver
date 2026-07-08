@@ -30,6 +30,7 @@ import (
 	batchattachv1a1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsnodevmbatchattachment/v1alpha1"
 	cnsregistervolumev1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsregistervolume/v1alpha1"
 	cnsunregistervolumev1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsunregistervolume/v1alpha1"
+	vksregistervolumev1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/vksregistervolume/v1alpha1"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/common/commonco"
 	cnsoperatortypes "sigs.k8s.io/vsphere-csi-driver/v3/pkg/syncer/cnsoperator/types"
 
@@ -113,6 +114,45 @@ func cleanUpCnsUnregisterVolumeInstances(ctx context.Context, restClientConfig *
 			}
 			log.Infof("Successfully deleted CnsUnregisterVolume: %s on namespace: %s",
 				cnsUnregisterVolume.Name, cnsUnregisterVolume.Namespace)
+		}
+	}
+}
+
+// cleanUpVKSRegisterVolumeInstances cleans up successful VKSRegisterVolume instances
+// in the guest cluster whose creation time is past timeInMin.
+func cleanUpVKSRegisterVolumeInstances(ctx context.Context, restClientConfig *rest.Config, timeInMin int) {
+	log := logger.GetLogger(ctx)
+	log.Infof("cleanUpVKSRegisterVolumeInstances: start")
+	cnsOperatorClient, err := k8s.NewClientForGroup(ctx, restClientConfig, cnsoperatorv1alpha1.GroupName)
+	if err != nil {
+		log.Errorf("Failed to create CnsOperator client. Err: %+v", err)
+		return
+	}
+
+	vksRegisterVolumesList := &vksregistervolumev1alpha1.VKSRegisterVolumeList{}
+	err = cnsOperatorClient.List(ctx, vksRegisterVolumesList)
+	if err != nil {
+		log.Warnf("Failed to get VKSRegisterVolumes from guest cluster. Err: %+v", err)
+		return
+	}
+
+	currentTime := time.Now()
+	for _, vksRegisterVolume := range vksRegisterVolumesList.Items {
+		elapsedMinutes := currentTime.Sub(vksRegisterVolume.CreationTimestamp.Time).Minutes()
+		if vksRegisterVolume.Status.Registered && int(elapsedMinutes)-timeInMin >= 0 {
+			err = cnsOperatorClient.Delete(ctx, &vksregistervolumev1alpha1.VKSRegisterVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vksRegisterVolume.Name,
+					Namespace: vksRegisterVolume.Namespace,
+				},
+			})
+			if err != nil {
+				log.Warnf("Failed to delete VKSRegisterVolume: %s on namespace: %s. Error: %v",
+					vksRegisterVolume.Name, vksRegisterVolume.Namespace, err)
+				continue
+			}
+			log.Infof("Successfully deleted VKSRegisterVolume: %s on namespace: %s",
+				vksRegisterVolume.Name, vksRegisterVolume.Namespace)
 		}
 	}
 }

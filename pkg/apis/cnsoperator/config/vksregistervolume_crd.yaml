@@ -1,0 +1,80 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: vksregistervolumes.cns.vmware.com
+spec:
+  group: cns.vmware.com
+  names:
+    kind: VKSRegisterVolume
+    listKind: VKSRegisterVolumeList
+    plural: vksregistervolumes
+    singular: vksregistervolume
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.registered
+      name: Registered
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: VKSRegisterVolume is the Schema for the vksregistervolumes API.
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: VKSRegisterVolumeSpec defines the desired state of VKSRegisterVolume.
+            properties:
+              diskURLPath:
+                description: 'DiskURLPath is the full Option-A URL pointing to the
+                  VMDK backing the volume. Format: https://<vc_ip>/folder/<vm_vmdk_path>?dcPath=<datacenterName>&dsName=<datastoreName>'
+                type: string
+              pvcName:
+                description: PVCName is the name of the pre-created guest PVC in
+                  the CR's namespace.
+                type: string
+              volumeID:
+                description: VolumeID is the FCD UUID of the existing vSphere volume
+                  to register.
+                type: string
+            required:
+            - diskURLPath
+            - pvcName
+            - volumeID
+            type: object
+          status:
+            description: VKSRegisterVolumeStatus defines the observed state of VKSRegisterVolume.
+            properties:
+              error:
+                description: Error is the last error encountered during registration,
+                  if any.
+                type: string
+              phase:
+                description: Phase describes the current phase of the registration
+                  workflow.
+                type: string
+              registered:
+                description: Registered indicates whether the volume registration
+                  completed successfully.
+                type: boolean
+            required:
+            - registered
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

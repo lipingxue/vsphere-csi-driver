@@ -30,6 +30,7 @@ import (
 	cnsnodevmattachmentv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsnodevmattachment/v1alpha1"
 	cnsnodevmbatchattachmentv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsnodevmbatchattachment/v1alpha1"
 	cnsregistervolumev1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsregistervolume/v1alpha1"
+	vksregistervolumev1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/vksregistervolume/v1alpha1"
 	cnsunregistervolumev1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsunregistervolume/v1alpha1"
 	cnsvolumemetadatav1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsvolumemetadata/v1alpha1"
 	infrastoragepolicyinfov1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/infrastoragepolicyinfo/v1alpha1"
@@ -65,6 +66,8 @@ var (
 	CnsVolumeMetadataPlural = "cnsvolumemetadatas"
 	// CnsRegisterVolumePlural is plural of CnsRegisterVolume
 	CnsRegisterVolumePlural = "cnsregistervolumes"
+	// VKSRegisterVolumePlural is plural of VKSRegisterVolume
+	VKSRegisterVolumePlural = "vksregistervolumes"
 	// CnsUnregisterVolumePlural is plural of CnsUnregisterVolume
 	CnsUnregisterVolumePlural = "cnsunregistervolumes"
 	// CnsFileAccessConfigPlural is plural of CnsFileAccessConfig
@@ -127,6 +130,12 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		SchemeGroupVersion,
 		&cnsregistervolumev1alpha1.CnsRegisterVolume{},
 		&cnsregistervolumev1alpha1.CnsRegisterVolumeList{},
+	)
+
+	scheme.AddKnownTypes(
+		SchemeGroupVersion,
+		&vksregistervolumev1alpha1.VKSRegisterVolume{},
+		&vksregistervolumev1alpha1.VKSRegisterVolumeList{},
 	)
 
 	scheme.AddKnownTypes(
